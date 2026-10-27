@@ -89,7 +89,15 @@ enum PromptEnhancer {
             The target model is Stable Diffusion XL. Write one or two vivid natural-language sentences \
             followed by a few comma-separated style and lighting terms.
             """
-        default:
+        case .mlx:
+            style = """
+            The target model is a modern diffusion transformer with a large language-model text encoder \
+            (Z-Image, FLUX.2 or Qwen-Image). It understands full sentences well: write two or three \
+            descriptive natural-language sentences covering subject, setting, lighting, composition and \
+            style. Avoid tag lists and quality keywords like "masterpiece". If the image should contain \
+            text, put the exact text in double quotes.
+            """
+        case .sd:
             style = """
             The target model is Stable Diffusion 1.x/2.x. Its text encoder only reads about 75 tokens, \
             so write 8 to 14 short descriptive phrases separated by commas, most important first: \

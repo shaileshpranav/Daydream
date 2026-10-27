@@ -43,8 +43,20 @@ struct GenerateView: View {
                 }
             }
             if let selectedModel {
-                LabeledContent("Output", value: "\(selectedModel.resolution) × \(selectedModel.resolution)")
-                LabeledContent("Compute", value: selectedModel.computeUnits.label)
+                if selectedModel.kind.hasFixedSize {
+                    LabeledContent("Output", value: "\(selectedModel.resolution) × \(selectedModel.resolution)")
+                    LabeledContent("Compute", value: selectedModel.computeUnits.label)
+                } else {
+                    let size = (app.request.aspect ?? .square).size(base: selectedModel.resolution)
+                    Picker("Aspect", selection: Binding(
+                        get: { app.request.aspect ?? .square },
+                        set: { app.request.aspect = $0 }
+                    )) {
+                        ForEach(AspectChoice.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    LabeledContent("Output", value: "\(size.width) × \(size.height)")
+                    LabeledContent("Compute", value: "GPU (MLX, float16)")
+                }
                 if let loras = selectedModel.loras, !loras.isEmpty {
                     LabeledContent("LoRA", value: loras.map(\.label).joined(separator: ", "))
                         .help("Fused into this model at conversion. Add the LoRA's trigger words to your prompt.")
@@ -56,9 +68,18 @@ struct GenerateView: View {
                     .font(.body)
                     .frame(minHeight: 90)
                     .scrollContentBackground(.hidden)
-                TextField("Negative prompt", text: $app.request.negativePrompt, axis: .vertical)
-                    .lineLimit(2...4)
+                if selectedModel?.defaults?.supportsNegativePrompt ?? true {
+                    TextField("Negative prompt", text: $app.request.negativePrompt, axis: .vertical)
+                        .lineLimit(2...4)
+                }
                 enhanceRow
+            }
+
+            if selectedModel?.kind == .mlx {
+                MLXLoRASection(loras: Binding(
+                    get: { app.request.loras ?? [] },
+                    set: { app.request.loras = $0 }
+                ))
             }
 
             Section("Settings") {
@@ -76,8 +97,10 @@ struct GenerateView: View {
                     }
                     .help("Random seed")
                 }
-                Picker("Scheduler", selection: $app.request.scheduler) {
-                    ForEach(SchedulerChoice.allCases) { Text($0.rawValue).tag($0) }
+                if selectedModel?.kind != .mlx {
+                    Picker("Scheduler", selection: $app.request.scheduler) {
+                        ForEach(SchedulerChoice.allCases) { Text($0.rawValue).tag($0) }
+                    }
                 }
             }
 
@@ -100,6 +123,26 @@ struct GenerateView: View {
             }
         }
         .formStyle(.grouped)
+        .onChange(of: selectedModel?.id) { oldID, _ in
+            applyDefaults(previous: store.model(id: oldID))
+        }
+    }
+
+    /// Distilled MLX models need very different steps/guidance (Z-Image Turbo: 9 steps,
+    /// guidance 0) from SD's 25 / 7.5, so switching models resets them.
+    private func applyDefaults(previous: InstalledModel?) {
+        if app.isRestoring {
+            app.isRestoring = false
+            return
+        }
+        guard let model = selectedModel else { return }
+        if let defaults = model.defaults {
+            app.request.steps = defaults.steps
+            app.request.guidance = defaults.guidance
+        } else if previous?.defaults != nil {
+            app.request.steps = 25
+            app.request.guidance = 7.5
+        }
     }
 
     // MARK: Prompt enhancer

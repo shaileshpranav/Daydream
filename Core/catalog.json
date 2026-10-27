@@ -44,26 +44,46 @@
     "notes": "1024px. Runs on the GPU with reduced-memory mode for 16 GB Macs."
   },
   {
-    "id": "zimage-turbo-coreai",
-    "name": "Z-Image-Turbo (Core AI, bf16)",
-    "kind": "zimage",
-    "repo": "mlboydaisuke/Z-Image-Turbo-CoreAI",
+    "id": "mlx-z-image-turbo-q4",
+    "name": "Z-Image Turbo (MLX, 4-bit)",
+    "kind": "mlx",
+    "mlxFamily": "z-image-turbo",
+    "repo": "mflux-community/z-image-turbo-mflux-q4",
     "folder": "",
-    "computeUnits": "cpuAndGPU",
-    "resolution": 512,
-    "approxGB": 19.0,
-    "notes": "Experimental. 11 GB DiT + 7.3 GB encoder; feasibility on 16 GB is being tested. No backend yet."
-  },
-  {
-    "id": "qwen-image-2.1-coreml",
-    "name": "Qwen-Image 2.1 (Core ML, fp16)",
-    "kind": "qwenImage",
-    "repo": "devin-lai/Qwen-Image-2.1-Coreml",
-    "folder": "",
+    "exclude": [".gitattributes", "README.md"],
     "computeUnits": "cpuAndGPU",
     "resolution": 1024,
-    "approxGB": 14.7,
-    "notes": "Experimental stretch goal. Tested upstream on 32 GB only; text encoder not converted. No backend yet.",
-    "license": "Qwen Research License: non-commercial use only"
+    "approxGB": 5.9,
+    "defaults": { "steps": 9, "guidance": 0.0 },
+    "notes": "6B photoreal model from Alibaba, 9 steps. Needs the MLX runtime."
+  },
+  {
+    "id": "mlx-flux2-klein-4b-q4",
+    "name": "FLUX.2 Klein 4B (MLX, 4-bit)",
+    "kind": "mlx",
+    "mlxFamily": "flux2-klein-4b",
+    "repo": "mflux-community/flux2-klein-4b-mflux-q4",
+    "folder": "",
+    "exclude": [".gitattributes", "README.md"],
+    "computeUnits": "cpuAndGPU",
+    "resolution": 1024,
+    "approxGB": 4.6,
+    "defaults": { "steps": 4, "guidance": 1.0, "supportsNegativePrompt": false },
+    "notes": "Smallest and fastest MLX model, 4 steps. No negative prompt. Needs the MLX runtime."
+  },
+  {
+    "id": "mlx-qwen-image-2.1-turbo-q4",
+    "name": "Qwen-Image 2.1 Turbo (MLX, 4-bit)",
+    "kind": "mlx",
+    "mlxFamily": "qwen-image-2.1-turbo",
+    "repo": "mflux-community/qwen-image-2-1-turbo-mflux-q4",
+    "folder": "",
+    "exclude": [".gitattributes", "README.md"],
+    "computeUnits": "cpuAndGPU",
+    "resolution": 768,
+    "approxGB": 10.0,
+    "defaults": { "steps": 8, "guidance": 1.0 },
+    "notes": "Strong prompt following and text rendering, 8 steps. Tight on 16 GB: close other apps. Needs the MLX runtime.",
+    "license": "Qwen-Image 2.1 weights: check the model card's license before commercial use"
   }
 ]

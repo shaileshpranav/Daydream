@@ -32,6 +32,10 @@ struct ModelManagerView: View {
                     CatalogRow(entry: entry, ramGB: ramGB)
                 }
             }
+
+            Section("MLX runtime") {
+                MLXRuntimeRow()
+            }
         }
         .navigationTitle("Models")
         .toolbar {
@@ -78,15 +82,19 @@ private struct InstalledRow: View {
                 }
             }
             Spacer()
-            Picker("Compute", selection: Binding(
-                get: { model.computeUnits },
-                set: { store.setComputeUnits($0, for: model) }
-            )) {
-                ForEach(ComputeUnitsChoice.allCases) { Text($0.label).tag($0) }
+            if model.kind == .mlx {
+                Text("GPU (MLX)").foregroundStyle(.secondary).frame(width: 180)
+            } else {
+                Picker("Compute", selection: Binding(
+                    get: { model.computeUnits },
+                    set: { store.setComputeUnits($0, for: model) }
+                )) {
+                    ForEach(ComputeUnitsChoice.allCases) { Text($0.label).tag($0) }
+                }
+                .labelsHidden()
+                .frame(width: 180)
+                .disabled(generator.isBusy)
             }
-            .labelsHidden()
-            .frame(width: 180)
-            .disabled(generator.isBusy)
             Button("Delete", role: .destructive) {
                 if generator.loadedModelID == model.id { generator.unloadModel() }
                 store.delete(model)
@@ -197,5 +205,43 @@ private struct ImportSheet: View {
                 return
             }
         }
+    }
+}
+
+/// Installs the Python + mflux environment that MLX models run in.
+private struct MLXRuntimeRow: View {
+    @Environment(MLXRuntime.self) private var runtime
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Python + \(MLXRuntime.package)").font(.headline)
+                Text("Runs the MLX models (Z-Image, FLUX.2, Qwen-Image) on the GPU. Needs Python 3.11+ from Homebrew.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                switch runtime.status {
+                case .installing(let line):
+                    Text(line).font(.caption.monospaced()).lineLimit(1).foregroundStyle(.secondary)
+                case .failed(let message):
+                    Text(message).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+                default:
+                    EmptyView()
+                }
+            }
+            Spacer()
+            switch runtime.status {
+            case .installed:
+                Label("Installed", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                Button("Log") { NSWorkspace.shared.open(MLXRuntime.logURL) }
+                    .disabled(!FileManager.default.fileExists(atPath: MLXRuntime.logURL.path))
+            case .installing:
+                ProgressView().controlSize(.small)
+            case .notInstalled:
+                Button("Install") { runtime.install() }
+            case .failed:
+                Button("Retry") { runtime.install() }
+            }
+        }
+        .padding(.vertical, 4)
     }
 }

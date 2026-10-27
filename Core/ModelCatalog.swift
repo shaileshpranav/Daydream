@@ -2,22 +2,30 @@ import CoreML
 import Foundation
 
 enum ModelKind: String, Codable, CaseIterable {
-    case sd          // SD 1.x / 2.x
-    case sdxl
-    case zimage      // Z-Image-Turbo (not yet runnable, see README)
-    case qwenImage   // Qwen-Image (not yet runnable, see README)
+    case sd          // SD 1.x / 2.x, Core ML
+    case sdxl        // Core ML
+    case mlx         // any mflux family (Z-Image, FLUX.2, Qwen-Image…), see MLXBackend
 
     var label: String {
         switch self {
         case .sd: "Stable Diffusion 1.x/2.x"
         case .sdxl: "Stable Diffusion XL"
-        case .zimage: "Z-Image"
-        case .qwenImage: "Qwen-Image"
+        case .mlx: "MLX"
         }
     }
 
     /// Whether this app has a backend for the kind yet.
-    var isRunnable: Bool { self == .sd || self == .sdxl }
+    var isRunnable: Bool { true }
+
+    /// Core ML models are converted with a fixed output size; MLX models take any size.
+    var hasFixedSize: Bool { self != .mlx }
+}
+
+/// Per-model defaults applied when the model is picked (e.g. Z-Image Turbo: 9 steps, no guidance).
+struct ModelDefaults: Codable, Hashable {
+    let steps: Int
+    let guidance: Double
+    var supportsNegativePrompt: Bool? = true
 }
 
 enum ComputeUnitsChoice: String, Codable, CaseIterable, Identifiable {
@@ -59,6 +67,9 @@ struct CatalogEntry: Codable, Identifiable, Hashable {
     let approxGB: Double
     let notes: String?
     let license: String?
+    /// For `kind == .mlx`: which mflux model family the weights are (see mlx_worker.py).
+    let mlxFamily: String?
+    let defaults: ModelDefaults?
 }
 
 enum ModelCatalog {
@@ -83,10 +94,12 @@ struct InstalledModel: Codable, Identifiable, Hashable {
     let resolution: Int
     /// LoRAs fused into the weights at conversion time (tools/convert --lora).
     var loras: [FusedLoRA]?
+    var mlxFamily: String?
+    var defaults: ModelDefaults?
     /// Not persisted; set when the folder is scanned.
     var folder: URL!
 
-    enum CodingKeys: String, CodingKey { case id, name, kind, computeUnits, resolution, loras }
+    enum CodingKeys: String, CodingKey { case id, name, kind, computeUnits, resolution, loras, mlxFamily, defaults }
 }
 
 struct FusedLoRA: Codable, Hashable {

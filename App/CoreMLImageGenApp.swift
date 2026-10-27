@@ -5,6 +5,7 @@ struct CoreMLImageGenApp: App {
     @State private var app = AppState()
     @State private var store = ModelStore()
     @State private var generator = Generator()
+    @State private var mlxRuntime = MLXRuntime()
 
     var body: some Scene {
         WindowGroup {
@@ -12,6 +13,7 @@ struct CoreMLImageGenApp: App {
                 .environment(app)
                 .environment(store)
                 .environment(generator)
+                .environment(mlxRuntime)
                 .frame(minWidth: 900, minHeight: 620)
                 #if DEBUG
                 .task { SmokeTest.runIfRequested(store: store, generator: generator) }
@@ -52,7 +54,12 @@ final class AppState {
         didSet { UserDefaults.standard.set(selectedModelID, forKey: "selectedModelID") }
     }
 
+    /// Set while restoring from the gallery so switching model doesn't overwrite the
+    /// restored steps and guidance with the model's defaults.
+    var isRestoring = false
+
     func restore(_ record: GenerationRecord) {
+        isRestoring = selectedModelID != record.modelID
         request = record.request
         selectedModelID = record.modelID
         section = .generate

@@ -1,6 +1,6 @@
 # CoreMLImageGen
 
-A native SwiftUI Mac app that runs text-to-image models locally with Core ML. It is tuned for an **M1 Pro with 16 GB** of RAM.
+A native SwiftUI Mac app that runs text-to-image models locally. It is tuned for an **M1 Pro with 16 GB** of RAM. It has two backends: **Core ML** for Stable Diffusion 1.5/2.1/XL (Neural Engine friendly), and **MLX** for newer quantized models such as Z-Image, FLUX.2 and Qwen-Image (see [MLX models](#mlx-models-z-image-flux2-qwen-image)).
 
 - **Generate**: prompt, negative prompt, steps, guidance, seed, scheduler, live preview, and cancel. Every image is saved automatically.
 - **Prompt enhancer** (⌘E): turns a short idea into a detailed prompt and negative prompt using Apple Intelligence, on device. See [Prompt enhancer](#prompt-enhancer).
@@ -36,8 +36,9 @@ build/Build/Products/Debug/CoreMLImageGen.app/Contents/MacOS/CoreMLImageGen -smo
 | `sd15` | SD 1.5, fp16 (chunked UNet) | 2.6 GB | CPU + Neural Engine | ✅ |
 | `sd21-base-palettized` | SD 2.1 base, 6-bit | 1.2 GB | CPU + Neural Engine | ✅ |
 | `sdxl-base-mbp-4.5` | SDXL base, 4.5-bit mixed | 3.4 GB | CPU + GPU, reduced memory | ✅ |
-| `zimage-turbo-coreai` | Z-Image-Turbo (Core AI, bf16) | ~19 GB | GPU | 🧪 no backend yet |
-| `qwen-image-2.1-coreml` | Qwen-Image 2.1 (fp16) | 14.7 GB | GPU | 🧪 stretch goal |
+| `mlx-flux2-klein-4b-q4` | FLUX.2 Klein 4B, 4-bit (MLX) | 4.6 GB | GPU, float16 | ✅ needs MLX runtime |
+| `mlx-z-image-turbo-q4` | Z-Image Turbo, 4-bit (MLX) | 5.9 GB | GPU, float16 | ✅ needs MLX runtime |
+| `mlx-qwen-image-2.1-turbo-q4` | Qwen-Image 2.1 Turbo, 4-bit (MLX) | 10 GB | GPU, float16 | ✅ needs MLX runtime; tight on 16 GB |
 
 Models are stored in `~/Library/Application Support/CoreMLImageGen/Models/<id>/`, each with a `model.json`. The catalog lives in `Core/catalog.json`. Adding an SD or SDXL repo there needs no code changes.
 
@@ -47,6 +48,8 @@ The **first load** of a model compiles it for this Mac's Neural Engine or GPU, w
 | Model | Steps | First load (compiles for the Neural Engine, once) | Per image | Notes |
 |---|---|---|---|---|
 | SD 1.5, 6-bit palettized | 25, DPM-Solver++ | ~4.6 min | **16 s** | Same seed gives identical pixels. App footprint ~185 MB (Neural Engine memory is counted separately) |
+| Z-Image Turbo, 4-bit (MLX) | 9 | ~11 s | **170 s** at 1024×1024 | About 18 s per step |
+| FLUX.2 Klein 4B, 4-bit (MLX) | 4 | ~6 s (no compile step) | **82 s** at 1024×1024 | About 16 s per step plus text encoding and decode. Same seed gives identical pixels. Smaller aspect sizes are proportionally faster |
 
 The download speed of the Hugging Face models depends on your connection; 1.6 GB took about 29 minutes here.
 
@@ -88,16 +91,35 @@ tools/convert/convert_sd.sh stable-diffusion-v1-5/stable-diffusion-v1-5 --nbits 
 - Remember the LoRA's trigger words in your prompt.
 - The LoRA must match the base model family (an SD 1.5 LoRA on an SD 1.5 base, an SDXL LoRA with `--xl`).
 
-## Z-Image and Qwen-Image: status
-- **Z-Image-Turbo** only exists as a community port to **Core AI**, the successor to Core ML in macOS 27 (`mlboydaisuke/Z-Image-Turbo-CoreAI`). Its weights are bf16: an 11 GB DiT plus a 7.3 GB Qwen3-4B encoder. On 16 GB it can only work if the encoder and DiT are loaded one after the other, and fp16 produces NaNs. Next step: a spike that measures it on this Mac, then either a `ZImageBackend` or our own palettized conversion.
-- **Qwen-Image 2.1** has a community Core ML port (`devin-lai/Qwen-Image-2.1-Coreml`): 14.7 GB fp16, tested upstream on 32 GB only, with the text encoder not converted. Its weights are licensed for **non-commercial use only**. Fitting 16 GB needs about 4-bit transformer chunks plus a converted text encoder. This is a stretch goal.
+## MLX models (Z-Image, FLUX.2, Qwen-Image)
+Newer diffusion transformers have no practical Core ML conversion that fits 16 GB, so the app runs them with **MLX** through [mflux](https://github.com/mflux-community/mflux). mflux offers pre-quantized 3–8-bit weights for most current open image models.
 
-Both appear in the Models list marked "Not supported yet". `Backends.make(for:)` in `Core/ImageBackend.swift` is where a new backend gets plugged in.
+**Setup:** go to **Models → MLX runtime → Install**. This creates a Python venv in `~/Library/Application Support/CoreMLImageGen/MLX` with a pinned `mflux` (and MLX). It needs Python 3.11+ from Homebrew (`brew install python@3.12`). Then download an MLX model like any other.
+
+**How it runs:**
+- `Core/Backends/mlx_worker.py` is a long-lived Python worker. The app talks to it in JSON lines (`MLXBackend.swift`), and the model stays loaded between images.
+- Unloading or switching models **terminates the worker**, which reliably returns all of its memory to the system.
+- It uses float16 compute, because M1 GPUs have no native bfloat16. mflux measured this as 22–27% faster on M1.
+- Cancel stops at the next denoising step.
+- If the worker dies (most likely out of memory), the app says so. mflux's output and tracebacks go to `~/Library/Application Support/CoreMLImageGen/MLX/worker.log` (**Models → MLX runtime → Log**).
+
+**What differs from Core ML models:**
+- **Any size:** pick an aspect ratio (1:1, 3:4, 4:3, 16:9, 9:16). The pixel count stays about the model's base resolution squared.
+- **Model defaults:** picking a model sets its steps and guidance (FLUX.2 Klein: 4 steps; Z-Image Turbo: 9 steps, guidance 0; Qwen-Image 2.1 Turbo: 8). FLUX.2 Klein takes no negative prompt, so that field hides.
+- **LoRAs without conversion:** put `.safetensors` files in `~/Library/Application Support/CoreMLImageGen/Models/Loras` (subfolders are fine). They're listed under **Add from Loras Folder** in the Generate screen's LoRA section, which also has **Rescan Folder** and **Show Loras Folder in Finder**. You can also add any file or a Hugging Face repo, then set its strength with a slider. LoRAs load with the model: changing them reloads the weights on the next generate, which takes seconds to a minute rather than an hour of conversion. The LoRA must match the model family.
+- **No live preview** for MLX models; you see step progress.
+
+**Adding another mflux model:** add a family to `make_model()` in `mlx_worker.py` and an entry with `"kind": "mlx"`, its `mlxFamily` and `defaults` to `Core/catalog.json`. The repos at [huggingface.co/mflux-community](https://huggingface.co/mflux-community) are the pre-quantized weights.
+
+On 16 GB, prefer 4-bit (`-q4`) weights and keep other apps light. Qwen-Image 2.1 Turbo at about 10 GB is the upper limit.
+
+`Backends.make(for:)` in `Core/ImageBackend.swift` is where a backend is chosen.
 
 ## Layout
 ```
 App/            SwiftUI app, views, debug smoke test
 Core/           request/record types, catalog, model store + HF downloader,
-                generator (one resident model), image saver, backends/
+                generator (one resident model), image saver, prompt enhancer,
+                MLX runtime installer, backends/ (Core ML SD, MLX worker)
 tools/convert/  checkpoint -> Core ML conversion script
 ```

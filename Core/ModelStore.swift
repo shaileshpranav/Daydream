@@ -20,9 +20,25 @@ final class ModelStore {
         return base.appending(path: "CoreMLImageGen/Models", directoryHint: .isDirectory)
     }()
 
+    /// Drop LoRA .safetensors files here (subfolders are fine) to pick them in Generate.
+    nonisolated static var lorasFolder: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appending(path: "CoreMLImageGen/Models/Loras", directoryHint: .isDirectory)
+    }
+
     init() {
-        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: Self.lorasFolder, withIntermediateDirectories: true)
         refresh()
+    }
+
+    /// The .safetensors files in the Loras folder, sorted by name. Read fresh each time
+    /// so files dropped in while the app runs show up.
+    nonisolated static func libraryLoRAs() -> [URL] {
+        guard let e = FileManager.default.enumerator(at: lorasFolder, includingPropertiesForKeys: nil,
+                                                     options: [.skipsHiddenFiles]) else { return [] }
+        return e.compactMap { $0 as? URL }
+            .filter { $0.pathExtension.lowercased() == "safetensors" }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
     }
 
     func refresh() {
@@ -135,11 +151,24 @@ final class ModelStore {
         for file in files {
             try Task.checkCancellation()
             let relative = entry.zip != nil ? file.path : String(file.path.dropFirst((entry.folder ?? "").count))
-            try await FileDownloader.download(HuggingFace.resolveURL(repo: entry.repo, path: file.path),
-                                              to: staging.appending(path: relative)) { bytes in
-                Task { @MainActor in
-                    counter.bytes += bytes
-                    self.downloads[entry.id]?.fraction = Double(counter.bytes) / total
+            // Multi-GB downloads over a flaky connection: retry a file a few times
+            // (from its start) instead of failing the whole model on one dropped connection.
+            var attempt = 0
+            while true {
+                attempt += 1
+                let before = await MainActor.run { counter.bytes }
+                do {
+                    try await FileDownloader.download(HuggingFace.resolveURL(repo: entry.repo, path: file.path),
+                                                      to: staging.appending(path: relative)) { bytes in
+                        Task { @MainActor in
+                            counter.bytes += bytes
+                            self.downloads[entry.id]?.fraction = Double(counter.bytes) / total
+                        }
+                    }
+                    break
+                } catch let error as URLError where error.code != .cancelled && attempt < 5 {
+                    await MainActor.run { counter.bytes = before }
+                    try await Task.sleep(for: .seconds(2 * attempt))
                 }
             }
         }
@@ -158,7 +187,8 @@ final class ModelStore {
         try? fm.removeItem(at: dest)
         try fm.moveItem(at: resources, to: dest)
         try Self.writeManifest(InstalledModel(id: entry.id, name: entry.name, kind: entry.kind,
-                                              computeUnits: entry.computeUnits, resolution: entry.resolution), to: dest)
+                                              computeUnits: entry.computeUnits, resolution: entry.resolution,
+                                              mlxFamily: entry.mlxFamily, defaults: entry.defaults), to: dest)
     }
 
     // MARK: Helpers

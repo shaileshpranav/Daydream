@@ -8,6 +8,13 @@ protocol ImageBackend: AnyObject {
 
     func load() throws
 
+    /// Loads for a specific request, for backends whose loaded state depends on it
+    /// (MLX bakes the request's LoRAs into the weights).
+    func load(for request: GenerationRequest) throws
+
+    /// True when the loaded state can't serve `request` and `load(for:)` must run again.
+    func needsReload(for request: GenerationRequest) -> Bool
+
     /// `onStep(step, total, preview)` returns false to cancel. `preview` is non-nil
     /// only on steps where `previewEvery` asks for one.
     func generate(
@@ -17,6 +24,11 @@ protocol ImageBackend: AnyObject {
     ) throws -> CGImage?
 
     func unload()
+}
+
+extension ImageBackend {
+    func load(for request: GenerationRequest) throws { try load() }
+    func needsReload(for request: GenerationRequest) -> Bool { false }
 }
 
 enum BackendError: LocalizedError {
@@ -35,7 +47,7 @@ enum Backends {
     static func make(for model: InstalledModel) throws -> ImageBackend {
         switch model.kind {
         case .sd, .sdxl: StableDiffusionBackend(model: model)
-        case .zimage, .qwenImage: throw BackendError.unsupported(model.kind)
+        case .mlx: MLXBackend(model: model)
         }
     }
 }

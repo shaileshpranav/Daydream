@@ -45,7 +45,7 @@ final class Generator {
         cancelFlag.set(false)
 
         do {
-            let backend = try await prepareBackend(for: model)
+            let backend = try await prepareBackend(for: model, request: request)
             phase = .generating(step: 0, total: request.steps)
             let start = Date()
             let flag = cancelFlag
@@ -72,8 +72,12 @@ final class Generator {
         phase = .idle
     }
 
-    private func prepareBackend(for model: InstalledModel) async throws -> ImageBackend {
+    private func prepareBackend(for model: InstalledModel, request: GenerationRequest) async throws -> ImageBackend {
         if let backend, backend.model == model, loadedModelID == model.id {
+            if backend.needsReload(for: request) {
+                phase = .loading(model.name)
+                try await run { try backend.load(for: request) }
+            }
             return backend
         }
         phase = .loading(model.name)
@@ -83,7 +87,7 @@ final class Generator {
         let next = try Backends.make(for: model)
         try await run {
             previous?.unload()
-            try next.load()
+            try next.load(for: request)
         }
         backend = next
         loadedModelID = model.id
