@@ -1,0 +1,103 @@
+import SwiftUI
+
+/// The generation queue under the image: what's running, what's waiting, what finished.
+struct QueueView: View {
+    @Environment(GenerationQueue.self) private var queue
+    @Environment(Generator.self) private var generator
+    @Environment(AppState.self) private var app
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Queue").font(.headline)
+                Text(summary).font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                if queue.hasFinished {
+                    Button("Clear Finished") { queue.clearFinished() }
+                        .buttonStyle(.borderless)
+                }
+            }
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    ForEach(queue.jobs) { job in
+                        row(job)
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var summary: String {
+        let done = queue.jobs.count { if case .done = $0.state { true } else { false } }
+        return "\(done) done · \(queue.pendingCount) waiting"
+    }
+
+    private func row(_ job: QueuedJob) -> some View {
+        HStack(spacing: 8) {
+            icon(job.state).frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(job.request.prompt).lineLimit(1).truncationMode(.tail)
+                Text(detail(job)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            switch job.state {
+            case .pending:
+                Button { queue.move(job.id, by: -1) } label: { Image(systemName: "chevron.up") }
+                    .help("Move up")
+                Button { queue.move(job.id, by: 1) } label: { Image(systemName: "chevron.down") }
+                    .help("Move down")
+                Button { queue.remove(job.id) } label: { Image(systemName: "xmark") }
+                    .help("Remove from queue")
+            case .running:
+                Button { queue.cancelCurrent() } label: { Image(systemName: "stop.fill") }
+                    .help("Cancel this image")
+            case .done(let record):
+                Button { app.restore(record) } label: { Image(systemName: "arrow.uturn.backward") }
+                    .help("Use these settings")
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([ImageSaver.folder.appending(path: record.fileName)])
+                } label: { Image(systemName: "folder") }
+                    .help("Show in Finder")
+            default:
+                Button { queue.remove(job.id) } label: { Image(systemName: "xmark") }
+                    .help("Remove")
+            }
+        }
+        .buttonStyle(.borderless)
+        .padding(.vertical, 3)
+        .padding(.horizontal, 6)
+        .background(job.state == .running ? Color.accentColor.opacity(0.12) : .clear,
+                    in: RoundedRectangle(cornerRadius: 5))
+    }
+
+    private func detail(_ job: QueuedJob) -> String {
+        var parts = [job.model.name, "seed \(job.request.seed)", "\(job.request.steps) steps"]
+        if let loras = job.request.loras, !loras.isEmpty { parts.append("\(loras.count) LoRA") }
+        switch job.state {
+        case .running:
+            switch generator.phase {
+            case .loading: parts.append("loading model…")
+            case .generating(let step, let total): parts.append("step \(step)/\(total)")
+            case .idle: break
+            }
+        case .done(let record): parts.append(String(format: "%.0f s", record.seconds))
+        case .failed(let message): parts.append(message)
+        case .cancelled: parts.append("cancelled")
+        case .pending: break
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private func icon(_ state: QueuedJob.State) -> some View {
+        switch state {
+        case .pending: Image(systemName: "clock").foregroundStyle(.secondary)
+        case .running: ProgressView().controlSize(.mini)
+        case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        case .cancelled: Image(systemName: "minus.circle").foregroundStyle(.secondary)
+        case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+        }
+    }
+}

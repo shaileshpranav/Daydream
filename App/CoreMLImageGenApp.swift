@@ -4,8 +4,15 @@ import SwiftUI
 struct CoreMLImageGenApp: App {
     @State private var app = AppState()
     @State private var store = ModelStore()
-    @State private var generator = Generator()
+    @State private var generator: Generator
+    @State private var queue: GenerationQueue
     @State private var mlxRuntime = MLXRuntime()
+
+    init() {
+        let generator = Generator()
+        _generator = State(initialValue: generator)
+        _queue = State(initialValue: GenerationQueue(generator: generator))
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -13,10 +20,11 @@ struct CoreMLImageGenApp: App {
                 .environment(app)
                 .environment(store)
                 .environment(generator)
+                .environment(queue)
                 .environment(mlxRuntime)
                 .frame(minWidth: 900, minHeight: 620)
                 #if DEBUG
-                .task { SmokeTest.runIfRequested(store: store, generator: generator) }
+                .task { SmokeTest.runIfRequested(store: store, generator: generator, queue: queue) }
                 #endif
         }
         .windowToolbarStyle(.unified)

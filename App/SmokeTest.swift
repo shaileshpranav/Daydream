@@ -8,8 +8,12 @@ import Foundation
 /// Prints timings and the saved PNG path, then exits (status 1 on failure).
 @MainActor
 enum SmokeTest {
-    static func runIfRequested(store: ModelStore, generator: Generator) {
+    static func runIfRequested(store: ModelStore, generator: Generator, queue: GenerationQueue) {
         let defaults = UserDefaults.standard
+        if let id = defaults.string(forKey: "queueTest") {
+            Task { exit(await runQueueTest(id: id, store: store, generator: generator, queue: queue) ? 0 : 1) }
+            return
+        }
         if defaults.bool(forKey: "loraTest") {
             Task { exit(await runLoRATest() ? 0 : 1) }
             return
@@ -25,6 +29,48 @@ enum SmokeTest {
                                steps: defaults.integer(forKey: "steps"))
             exit(ok ? 0 : 1)
         }
+    }
+
+    /// `-queueTest sd15-palettized` queues a batch of 3 (10 steps each), cancels the
+    /// middle job after its third step, and checks done / cancelled / done with seeds 7, 8, 9.
+    private static func runQueueTest(id: String, store: ModelStore, generator: Generator, queue: GenerationQueue) async -> Bool {
+        func log(_ s: String) { print("[queue] \(s)"); fflush(stdout) }
+        guard let model = store.model(id: id) else { log("\(id) isn't installed"); return false }
+        var request = GenerationRequest(prompt: "a lighthouse on a cliff at night, long exposure photo")
+        request.seed = 7
+        request.steps = 10
+        let start = Date()
+        queue.enqueue(model: model, request: request, count: 3, previewEvery: 0)
+        log("queued \(queue.jobs.count) jobs, seeds \(queue.jobs.map(\.request.seed))")
+
+        var cancelledMiddle = false
+        var loads = 0, wasLoading = false
+        while queue.isRunning || queue.pendingCount > 0 {
+            if case .loading = generator.phase { if !wasLoading { loads += 1 }; wasLoading = true } else { wasLoading = false }
+            if !cancelledMiddle, queue.jobs[1].state == .running, case .generating(let step, _) = generator.phase, step >= 3 {
+                log("cancelling job 2 at step \(step)")
+                queue.cancelCurrent()
+                cancelledMiddle = true
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        let states = queue.jobs.map { job -> String in
+            switch job.state {
+            case .done(let r): "done(seed \(r.request.seed), \(String(format: "%.1f", r.seconds)) s)"
+            case .cancelled: "cancelled"
+            case .failed(let m): "failed(\(m))"
+            default: "\(job.state)"
+            }
+        }
+        log("states: \(states.joined(separator: ", "))")
+        log("model loads: \(loads), total \(String(format: "%.0f", Date().timeIntervalSince(start))) s")
+        let ok: Bool = {
+            guard queue.jobs.count == 3, case .done(let a) = queue.jobs[0].state, queue.jobs[1].state == .cancelled,
+                  case .done(let c) = queue.jobs[2].state else { return false }
+            return a.request.seed == 7 && c.request.seed == 9 && loads <= 1
+        }()
+        log(ok ? "PASS" : "FAIL")
+        return ok
     }
 
     /// `-loraTest YES` classifies the Loras folder, a Hugging Face LoRA (header only),

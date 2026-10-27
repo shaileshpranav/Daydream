@@ -3,6 +3,7 @@
 A native SwiftUI Mac app that runs text-to-image models locally. It is tuned for an **M1 Pro with 16 GB** of RAM. It has two backends: **Core ML** for Stable Diffusion 1.5/2.1/XL (Neural Engine friendly), and **MLX** for newer quantized models such as Z-Image, FLUX.2 and Qwen-Image (see [MLX models](#mlx-models-z-image-flux2-qwen-image)).
 
 - **Generate**: prompt, negative prompt, steps, guidance, seed, scheduler, live preview, and cancel. Every image is saved automatically.
+- **Queue**: ⌘↩ adds the current settings as a job; it says **Add to Queue** while something is running. **Images: N** queues a batch with consecutive seeds (42, 43, 44…), so any one can be reproduced. The queue list under the image shows each job's progress and lets you reorder or remove waiting jobs, cancel the running one, cancel everything, clear finished jobs, and reuse a finished job's settings. Jobs run one at a time on the single resident model; consecutive jobs on the same model reuse it without reloading. Each job captures its settings when queued, so editing the prompt doesn't change jobs already waiting.
 - **Prompt enhancer** (⌘E): turns a short idea into a detailed prompt and negative prompt using Apple Intelligence, on device. See [Prompt enhancer](#prompt-enhancer).
 - **Gallery**: every image in `~/Pictures/CoreMLImageGen`. Click one to restore its prompt and settings.
 - **Models**: download Apple's pre-converted models from Hugging Face, import models you converted yourself, pick compute units per model, and delete models.

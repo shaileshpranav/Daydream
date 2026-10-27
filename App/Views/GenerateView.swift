@@ -4,7 +4,9 @@ struct GenerateView: View {
     @Environment(AppState.self) private var app
     @Environment(ModelStore.self) private var store
     @Environment(Generator.self) private var generator
+    @Environment(GenerationQueue.self) private var queue
     @AppStorage("previewEvery") private var previewEvery = 5
+    @AppStorage("batchCount") private var batchCount = 1
     @State private var enhancing = false
     @State private var beforeEnhance: PromptEnhancer.Result?
     @State private var enhanceError: String?
@@ -108,20 +110,27 @@ struct GenerateView: View {
             }
 
             Section {
-                if generator.isBusy {
-                    Button("Cancel", role: .cancel) { generator.cancel() }
+                Stepper(value: $batchCount, in: 1...50) {
+                    Text(batchCount == 1 ? "Images: 1" : "Images: \(batchCount) (seeds \(app.request.seed)–\(app.request.seed &+ UInt32(batchCount - 1)))")
+                }
+                Button {
+                    guard let model = selectedModel else { return }
+                    queue.enqueue(model: model, request: app.request, count: batchCount, previewEvery: previewEvery)
+                } label: {
+                    Text(queue.isRunning ? "Add to Queue" : (batchCount == 1 ? "Generate" : "Generate \(batchCount)"))
                         .frame(maxWidth: .infinity)
-                } else {
-                    Button {
-                        guard let model = selectedModel else { return }
-                        let request = app.request
-                        Task { await generator.generate(model: model, request: request, previewEvery: previewEvery) }
-                    } label: {
-                        Text("Generate").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(selectedModel == nil || app.request.prompt.trimmingCharacters(in: .whitespaces).isEmpty)
+                if queue.isRunning {
+                    HStack {
+                        Button("Cancel Current", role: .cancel) { queue.cancelCurrent() }
+                        if queue.pendingCount > 0 {
+                            Button("Cancel All (\(queue.pendingCount + 1))", role: .destructive) { queue.cancelAll() }
+                        }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(selectedModel == nil || app.request.prompt.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .frame(maxWidth: .infinity)
                 }
             }
         }
@@ -274,6 +283,10 @@ struct GenerateView: View {
                         NSWorkspace.shared.activateFileViewerSelecting([ImageSaver.folder.appending(path: record.fileName)])
                     }
                 }
+            }
+            if !queue.jobs.isEmpty {
+                QueueView()
+                    .frame(maxHeight: 220)
             }
         }
         .padding()

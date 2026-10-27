@@ -38,8 +38,16 @@ final class Generator {
         loadedModelID = nil
     }
 
-    func generate(model: InstalledModel, request: GenerationRequest, previewEvery: Int) async {
-        guard !isBusy else { return }
+    enum Outcome: Equatable {
+        case saved(GenerationRecord)
+        case cancelled
+        case failed(String)
+    }
+
+    @discardableResult
+    func generate(model: InstalledModel, request: GenerationRequest, previewEvery: Int) async -> Outcome {
+        guard !isBusy else { return .failed("Another image is already generating.") }
+        let outcome: Outcome
         lastError = nil
         preview = nil
         cancelFlag.set(false)
@@ -63,13 +71,18 @@ final class Generator {
             let seconds = Date().timeIntervalSince(start)
             lastImage = image
             preview = nil
-            lastRecord = try ImageSaver.save(image, request: request, model: model, seconds: seconds)
+            let record = try ImageSaver.save(image, request: request, model: model, seconds: seconds)
+            lastRecord = record
+            outcome = .saved(record)
         } catch is CancellationError {
             preview = nil
+            outcome = .cancelled
         } catch {
             lastError = error.localizedDescription
+            outcome = .failed(error.localizedDescription)
         }
         phase = .idle
+        return outcome
     }
 
     private func prepareBackend(for model: InstalledModel, request: GenerationRequest) async throws -> ImageBackend {
