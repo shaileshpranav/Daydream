@@ -41,8 +41,8 @@ struct CoreMLImageGenApp: App {
 }
 
 enum AppSection: String, CaseIterable, Identifiable {
-    case generate = "Generate"
-    case gallery = "Gallery"
+    case generate = "Create"
+    case gallery = "My Pictures"
     case models = "Models"
 
     var id: String { rawValue }
@@ -69,6 +69,10 @@ final class AppState {
     /// Set while restoring from the gallery so switching model doesn't overwrite the
     /// restored steps and guidance with the model's defaults.
     var isRestoring = false
+
+    /// The launch request has generic SD settings; Create swaps in the model's recommended
+    /// ones the first time it appears.
+    var appliedLaunchDefaults = false
 
     /// A finished image the user clicked in the queue, shown instead of the latest one.
     var viewedRecord: GenerationRecord?
@@ -107,8 +111,6 @@ final class AppState {
 
 struct RootView: View {
     @Environment(AppState.self) private var app
-    @Environment(ModelStore.self) private var store
-
     var body: some View {
         @Bindable var app = app
         NavigationSplitView {
@@ -122,9 +124,6 @@ struct RootView: View {
             case .gallery: GalleryView()
             case .models: ModelManagerView()
             }
-        }
-        .onAppear {
-            if store.installed.isEmpty { app.section = .models }
         }
     }
 }

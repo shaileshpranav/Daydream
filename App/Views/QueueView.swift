@@ -9,7 +9,7 @@ struct QueueView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Queue").font(.headline)
+                Text("Up Next").font(.headline)
                 Text(summary).font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 if queue.hasFinished {
@@ -31,7 +31,7 @@ struct QueueView: View {
 
     private var summary: String {
         let done = queue.jobs.count { if case .done = $0.state { true } else { false } }
-        return "\(done) done · \(queue.pendingCount) waiting"
+        return "\(done) finished · \(queue.pendingCount) waiting · click a finished one to see it"
     }
 
     private func row(_ job: QueuedJob) -> some View {
@@ -52,14 +52,14 @@ struct QueueView: View {
                     .help("Remove from queue")
             case .running:
                 Button { queue.cancelCurrent() } label: { Image(systemName: "stop.fill") }
-                    .help("Cancel this image")
+                    .help("Stop this picture")
             case .done(let record):
                 Button { app.restore(record) } label: { Image(systemName: "arrow.uturn.backward") }
-                    .help("Use these settings")
+                    .help("Reuse these settings")
                 Button {
                     app.useAsStartImage(ImageSaver.folder.appending(path: record.fileName), for: job.model)
                 } label: { Image(systemName: "photo.badge.arrow.down") }
-                    .help("Use as start image")
+                    .help("Edit this picture")
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([ImageSaver.folder.appending(path: record.fileName)])
                 } label: { Image(systemName: "folder") }
@@ -87,22 +87,22 @@ struct QueueView: View {
     }
 
     private func detail(_ job: QueuedJob) -> String {
-        var parts = [job.model.name, "seed \(job.request.seed)", "\(job.request.steps) steps"]
+        var parts = [job.model.name]
         if let loras = job.request.loras, !loras.isEmpty { parts.append("\(loras.count) LoRA") }
         if job.request.isImageToImage {
-            parts.append("img2img \((job.request.change ?? 0.6).formatted(.number.precision(.fractionLength(2))))")
+            parts.append("editing a picture")
         }
         switch job.state {
         case .running:
             switch generator.phase {
-            case .loading: parts.append("loading model…")
-            case .generating(let step, let total): parts.append("step \(step)/\(total)")
+            case .loading: parts.append("getting the model ready…")
+            case .generating(let step, let total): parts.append("\(Int(Double(step) / Double(max(total, 1)) * 100))%")
             case .idle: break
             }
-        case .done(let record): parts.append(String(format: "%.0f s", record.seconds))
+        case .done(let record): parts.append(String(format: "done in %.0f s", record.seconds))
         case .failed(let message): parts.append(message)
-        case .cancelled: parts.append("cancelled")
-        case .pending: break
+        case .cancelled: parts.append("stopped")
+        case .pending: parts.append("waiting")
         }
         return parts.joined(separator: " · ")
     }

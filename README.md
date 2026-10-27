@@ -2,11 +2,11 @@
 
 A native SwiftUI Mac app that runs text-to-image models locally. It is tuned for an **M1 Pro with 16 GB** of RAM. It has two backends: **Core ML** for Stable Diffusion 1.5/2.1/XL (Neural Engine friendly), and **MLX** for newer quantized models such as Z-Image, FLUX.2 and Qwen-Image (see [MLX models](#mlx-models-z-image-flux2-qwen-image)).
 
-- **Generate**: prompt, negative prompt, steps, guidance, seed, scheduler, live preview, and cancel. Every image is saved automatically.
-- **Queue**: ⌘↩ adds the current settings as a job; it says **Add to Queue** while something is running. **Images: N** queues a batch with consecutive seeds (42, 43, 44…), so any one can be reproduced. The queue list under the image shows each job's progress and lets you reorder or remove waiting jobs, cancel the running one, cancel everything, clear finished jobs, and reuse a finished job's settings. Jobs run one at a time on the single resident model; consecutive jobs on the same model reuse it without reloading. Each job captures its settings when queued, so editing the prompt doesn't change jobs already waiting.
-- **Image-to-image**: in the **Start Image** section, drop an image or choose one, or pick **Use as Start Image** from a gallery image's menu or a finished queue job. **Change** (0.05–1) sets how much to redraw: low keeps the composition and details, high mostly follows the prompt. It works on every model. Core ML models scale and centre-crop the start image to their fixed size; MLX models switch to the aspect closest to the image. The start image is copied into `Application Support/CoreMLImageGen/StartImages`, so queued jobs and saved settings keep working if the original moves.
+- **Create** (was Generate): a description box with **Surprise Me** and one-click **Style** chips (Photo, Watercolor, Anime…, added to the prompt as visible text), a **Shape** picker, **Quality** (Quick / Standard / Extra Detail: 0.6×, 1× and 1.5× the model's recommended steps) and how many pictures to make. Negative prompt ("Things to avoid"), steps, guidance, seed ("variation number"), scheduler and LoRAs are under **Show advanced options**. With no model installed, Create shows a welcome screen with one button that downloads the recommended starter model. Every image is saved automatically; under it are Save…, Share, Copy and More (Edit This Picture, Reuse These Settings, Show in Finder).
+- **Queue** ("Up Next"): ⌘↩ adds the current settings as a job; the button says **Add to Queue** while something is running. **Make N pictures** queues a batch with consecutive seeds (42, 43, 44…), so any one can be reproduced. The queue list under the image shows each job's progress and lets you reorder or remove waiting jobs, cancel the running one, cancel everything, clear finished jobs, and reuse a finished job's settings. Jobs run one at a time on the single resident model; consecutive jobs on the same model reuse it without reloading. Each job captures its settings when queued, so editing the prompt doesn't change jobs already waiting.
+- **Image-to-image**: in the **Start Image** section, drop an image or choose one, or pick **Use as Start Image** from a gallery image's menu or a finished queue job. **How much to change it** (0.05–1, "A little" to "A lot") sets how much to redraw: low keeps the composition and details, high mostly follows the prompt. It works on every model. Core ML models scale and centre-crop the start image to their fixed size; MLX models switch to the aspect closest to the image. The start image is copied into `Application Support/CoreMLImageGen/StartImages`, so queued jobs and saved settings keep working if the original moves.
 - **Prompt enhancer** (⌘E): turns a short idea into a detailed prompt and negative prompt using Apple Intelligence, on device. See [Prompt enhancer](#prompt-enhancer).
-- **Gallery**: every image in `~/Pictures/CoreMLImageGen`. Click one to open it full size:
+- **My Pictures** (was Gallery): every image in `~/Pictures/CoreMLImageGen`, searchable by description. Click one to open it full size:
   - Fit or actual size: double-click, pinch, or ⌘0, ⌘1, ⌘+ and ⌘−.
   - **←** and **→** move through the gallery, and **Esc** goes back.
   - A side panel shows how it was made: prompt, model, seed, steps, guidance, size, LoRAs, start image and time.
@@ -64,7 +64,7 @@ The **first load** of a model compiles it for this Mac's Neural Engine or GPU, w
 The download speed of the Hugging Face models depends on your connection; 1.6 GB took about 29 minutes here.
 
 ## Model manager
-The **Models** sidebar item has three tabs.
+The **Models** sidebar item has three tabs: My Models, Style Add-ons (LoRAs) and Get Models.
 
 **Models:** every installed model, with disk use and free space at the top. Select one to:
 - rename it;
@@ -75,7 +75,7 @@ The **Models** sidebar item has three tabs.
 
 **LoRAs:** everything in `Models/Loras`, with the base model each one is for, its size and training steps. For each, set a **default strength** and **trigger words**; suggestions come from its training captions when the file records them. In Generate, a LoRA then starts at that strength and offers **Insert trigger words**. You can import files, download a LoRA by Hugging Face repo, or move one to the Trash.
 
-**Add Models:**
+**Get Models:** the catalog comes first, with a plain description, download size and speed for each model; downloading an MLX model also starts the MLX runtime setup. The options below are under **Show advanced install options**.
 - **From Hugging Face (MLX):** paste any mflux-format repo (e.g. `mflux-community/flux2-klein-9b-mflux-q4`). The family is detected from the name, and you can change it. Supported families: Z-Image Turbo, Z-Image (base), FLUX.2 Klein 4B and 9B, Qwen-Image 2.1 Turbo and base.
 - **Catalog:** shows each model's download size and estimated memory.
 - **Import** your own Core ML conversion, and install the MLX runtime.

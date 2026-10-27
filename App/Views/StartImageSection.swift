@@ -24,16 +24,23 @@ struct StartImageSection: View {
                     .frame(width: 72, height: 72)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Change: \(app.request.change ?? 0.6, specifier: "%.2f")")
+                        Text("How much to change it")
                         Slider(value: Binding(get: { app.request.change ?? 0.6 }, set: { app.request.change = $0 }),
-                               in: 0.05...1, step: 0.05)
+                               in: 0.05...1, step: 0.05) {
+                            EmptyView()
+                        } minimumValueLabel: {
+                            Text("A little").font(.caption2)
+                        } maximumValueLabel: {
+                            Text("A lot").font(.caption2)
+                        }
+                        .help("Change: \((app.request.change ?? 0.6).formatted(.number.precision(.fractionLength(2))))")
                         Text(changeHint).font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 HStack {
-                    Button("Replace…") { picking = true }
+                    Button("Choose Another…") { picking = true }
                     Spacer()
-                    Button("Remove", role: .destructive) { app.request.startImage = nil }
+                    Button("Don't Use a Picture", role: .destructive) { app.request.startImage = nil }
                 }
                 .task(id: path) {
                     thumbnail = await Task.detached { StartImages.load(path).flatMap { thumb($0) } }.value
@@ -41,10 +48,11 @@ struct StartImageSection: View {
             } else {
                 VStack(spacing: 6) {
                     Image(systemName: "photo.badge.plus").font(.title2).foregroundStyle(.secondary)
-                    Text("Drop an image here, or")
+                    Text("Optional: drag a photo here to change it with your description, or")
+                        .multilineTextAlignment(.center)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Button("Choose Image…") { picking = true }
+                    Button("Choose a Picture…") { picking = true }
                 }
                 .frame(maxWidth: .infinity, minHeight: 90)
                 .background(RoundedRectangle(cornerRadius: 8)
@@ -52,10 +60,10 @@ struct StartImageSection: View {
                     .foregroundStyle(dropTargeted ? Color.accentColor : .secondary.opacity(0.5)))
             }
         } header: {
-            Text("Start Image")
+            Text("Start from a picture")
         } footer: {
             if app.request.startImage != nil, let model, model.kind.hasFixedSize {
-                Text("\(model.name) works at \(model.resolution)×\(model.resolution); the start image is scaled and centre-cropped to fit.")
+                Text("\(model.name) makes square pictures, so the edges of a non-square picture are trimmed.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -71,9 +79,9 @@ struct StartImageSection: View {
 
     private var changeHint: String {
         switch app.request.change ?? 0.6 {
-        case ..<0.3: "Light touch: keeps the composition and most details"
-        case ..<0.7: "Keeps the composition, redraws details to match the prompt"
-        default: "Loose: mostly follows the prompt, the image is a rough guide"
+        case ..<0.3: "Light touch: keeps the layout and most details"
+        case ..<0.7: "Keeps the layout, redraws details to match your description"
+        default: "Big changes: mostly follows your description, the picture is a rough guide"
         }
     }
 

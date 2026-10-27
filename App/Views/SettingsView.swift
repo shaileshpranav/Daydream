@@ -8,8 +8,8 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Toggle("Load a model as soon as it's selected", isOn: $preloadModels)
-            Text("Generate then starts at once instead of waiting for the model to load. Turn off to keep memory free until you generate.")
+            Toggle("Get the model ready as soon as I pick it", isOn: $preloadModels)
+            Text("Pictures then start right away. Turn off to keep your Mac's memory free until you create a picture.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -18,7 +18,7 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Picker("Live preview", selection: $previewEvery) {
+            Picker("Show the picture while it's being made", selection: $previewEvery) {
                 Text("Off").tag(0)
                 ForEach([2, 5, 10], id: \.self) { Text("Every \($0) steps").tag($0) }
             }
@@ -26,12 +26,12 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            LabeledContent("Images are saved to") {
+            LabeledContent("Pictures are saved to") {
                 Button(ImageSaver.folder.path) { NSWorkspace.shared.open(ImageSaver.folder) }
                     .buttonStyle(.link)
             }
 
-            LabeledContent("Resident model") {
+            LabeledContent("Model in memory") {
                 HStack {
                     Text(generator.loadedModelID ?? "none")
                     Button("Unload") { generator.unloadModel() }

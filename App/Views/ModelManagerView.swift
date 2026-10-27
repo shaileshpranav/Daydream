@@ -4,9 +4,9 @@ import UniformTypeIdentifiers
 /// Models, LoRAs and installing new ones: a list on the left, details on the right.
 struct ModelManagerView: View {
     enum Tab: String, CaseIterable, Identifiable {
-        case models = "Models"
-        case loras = "LoRAs"
-        case add = "Add Models"
+        case models = "My Models"
+        case loras = "Style Add-ons"
+        case add = "Get Models"
         var id: String { rawValue }
     }
 
@@ -42,7 +42,7 @@ struct ModelManagerView: View {
             case .add: AddModelsView()
             }
         }
-        .navigationTitle("Model Manager")
+        .navigationTitle("Models")
         .toolbar {
             Button("Reveal Models Folder", systemImage: "folder") { NSWorkspace.shared.open(store.root) }
         }
@@ -55,9 +55,9 @@ struct ModelManagerView: View {
 
     private func tabTitle(_ tab: Tab) -> String {
         switch tab {
-        case .models: "Models (\(store.installed.count))"
-        case .loras: "LoRAs (\(loras.items.count))"
-        case .add: store.downloads.isEmpty ? "Add Models" : "Add Models (\(store.downloads.count)↓)"
+        case .models: "My Models (\(store.installed.count))"
+        case .loras: "Style Add-ons (\(loras.items.count))"
+        case .add: store.downloads.isEmpty ? "Get Models" : "Get Models (\(store.downloads.count)↓)"
         }
     }
 
@@ -77,8 +77,13 @@ struct ModelManagerView: View {
             .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
             .overlay {
                 if store.installed.isEmpty {
-                    ContentUnavailableView("No models", systemImage: "shippingbox",
-                                           description: Text("Install one from Add Models."))
+                    ContentUnavailableView {
+                        Label("No models yet", systemImage: "shippingbox")
+                    } description: {
+                        Text("A model is what makes the pictures. Download one to get started.")
+                    } actions: {
+                        Button("Get Models") { tab = .add }.buttonStyle(.borderedProminent)
+                    }
                 }
             }
             Group {
@@ -111,8 +116,8 @@ struct ModelManagerView: View {
             .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
             .overlay {
                 if loras.items.isEmpty {
-                    ContentUnavailableView("No LoRAs", systemImage: "square.stack.3d.up",
-                                           description: Text("Import .safetensors files or download one below."))
+                    ContentUnavailableView("No style add-ons", systemImage: "square.stack.3d.up",
+                                           description: Text("Style add-ons (LoRAs) teach a model a particular look or character. They're optional. Import .safetensors files or download one below."))
                 }
             }
             .safeAreaInset(edge: .bottom) { LoRAAddBar() }
@@ -166,11 +171,12 @@ private struct ModelListRow: View {
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.name).lineLimit(1)
-                Text(model.backendLabel).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(ModelBlurb.tagline(for: model)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .help(model.backendLabel)
             }
             Spacer()
             if generator.loadedModelID == model.id {
-                Text("loaded")
+                Text("ready")
                     .font(.caption2)
                     .padding(.horizontal, 5)
                     .background(.green.opacity(0.2), in: Capsule())
@@ -202,6 +208,7 @@ private struct ModelDetailView: View {
                 TextField("Name", text: $draft.name)
                     .font(.title3)
                     .onSubmit(save)
+                Text(ModelBlurb.tagline(for: model)).foregroundStyle(.secondary)
                 LabeledContent("Backend", value: model.backendLabel)
                 if let source = model.source ?? model.catalogEntry?.repo {
                     LabeledContent("Source") {
@@ -270,7 +277,7 @@ private struct ModelDetailView: View {
             } header: {
                 Text("Defaults")
             } footer: {
-                Text("Applied when you pick this model in Generate, and by Use Recommended.")
+                Text("Used when you pick this model in Create, and for its Standard quality.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -281,13 +288,13 @@ private struct ModelDetailView: View {
             }
             if let base = model.loraBase {
                 Section("LoRAs") {
-                    LabeledContent("Accepts", value: "\(base.label) LoRAs, added in Generate")
+                    LabeledContent("Accepts", value: "\(base.label) LoRAs, added in Create › Advanced")
                 }
             }
 
             Section {
                 HStack {
-                    Button("Use in Generate") {
+                    Button("Create with This Model") {
                         app.selectedModelID = model.id
                         app.section = .generate
                     }
@@ -440,9 +447,9 @@ private struct LoRADetailView: View {
                     }
                 }
             } header: {
-                Text("When added in Generate")
+                Text("When added in Create")
             } footer: {
-                Text("New uses start at this strength, and Generate offers to insert the trigger words into your prompt.")
+                Text("New uses start at this strength, and Create offers to insert the trigger words into your description.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -450,7 +457,7 @@ private struct LoRADetailView: View {
                 Section("Works with") {
                     let compatible = store.installed.filter { $0.loraBase == base }
                     if compatible.isEmpty {
-                        Text("No installed \(base.label) model. Install one from Add Models.").foregroundStyle(.secondary)
+                        Text("No installed \(base.label) model. Install one from Get Models.").foregroundStyle(.secondary)
                     }
                     ForEach(compatible) { Text($0.name) }
                 }
@@ -484,6 +491,11 @@ private struct AddModelsView: View {
     @Environment(ModelStore.self) private var store
     @State private var importing = false
     @State private var pendingImport: URL?
+    @AppStorage("showAdvancedInstall") private var showAdvanced = false
+
+    private var available: [CatalogEntry] {
+        ModelCatalog.entries.filter { !store.isInstalled($0) && store.downloads[$0.id] == nil }
+    }
 
     var body: some View {
         List {
@@ -496,30 +508,44 @@ private struct AddModelsView: View {
             }
 
             Section {
-                HuggingFaceInstallRow()
+                ForEach(available) { entry in
+                    CatalogRow(entry: entry)
+                }
+                if available.isEmpty {
+                    Text("You've installed every model in the list.").foregroundStyle(.secondary)
+                }
             } header: {
-                Text("From Hugging Face (MLX)")
+                Text("Available models")
             } footer: {
-                Text("Any mflux-format repo of a supported family, e.g. from huggingface.co/mflux-community. Prefer -q4 versions on a 16 GB Mac.")
+                Text("Downloads are large, and happen once. Each model works offline afterwards.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            Section("Catalog") {
-                ForEach(ModelCatalog.entries.filter { !store.isInstalled($0) && store.downloads[$0.id] == nil }) { entry in
-                    CatalogRow(entry: entry)
-                }
-            }
-
             Section {
-                Button("Import Converted Core ML Model…") { importing = true }
-            } header: {
-                Text("Your own Core ML conversion")
-            } footer: {
-                Text("A folder made by tools/convert/convert_sd.sh (see the README).").font(.caption).foregroundStyle(.secondary)
+                Toggle("Show advanced install options", isOn: $showAdvanced.animation())
             }
 
-            Section("MLX runtime") {
-                MLXRuntimeRow()
+            if showAdvanced {
+                Section {
+                    HuggingFaceInstallRow()
+                } header: {
+                    Text("From Hugging Face (MLX)")
+                } footer: {
+                    Text("Any mflux-format repo of a supported family, e.g. from huggingface.co/mflux-community. Prefer -q4 versions on a 16 GB Mac.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section {
+                    Button("Import Converted Core ML Model…") { importing = true }
+                } header: {
+                    Text("Your own Core ML conversion")
+                } footer: {
+                    Text("A folder made by tools/convert/convert_sd.sh (see the README).").font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section("MLX runtime") {
+                    MLXRuntimeRow()
+                }
             }
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.folder]) { result in
@@ -590,6 +616,7 @@ private struct HuggingFaceInstallRow: View {
 
 private struct CatalogRow: View {
     @Environment(ModelStore.self) private var store
+    @Environment(MLXRuntime.self) private var runtime
     let entry: CatalogEntry
 
     var body: some View {
@@ -597,17 +624,28 @@ private struct CatalogRow: View {
         let fit = MemoryEstimate.fit(estimate)
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(entry.name).font(.headline)
-                Text("\(entry.kind == .mlx ? "MLX" : "Core ML") · \(entry.resolution) px · \(entry.approxGB, specifier: "%.1f") GB download · \(entry.repo)")
+                HStack {
+                    Text(entry.name).font(.headline)
+                    if entry.id == ModelBlurb.starterID {
+                        Text("Best to start with")
+                            .font(.caption2.bold())
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.accentColor.opacity(0.2), in: Capsule())
+                    }
+                }
+                Text(ModelBlurb.tagline(id: entry.id, kind: entry.kind, notes: entry.notes)).font(.callout)
+                Text(["\(entry.approxGB.formatted(.number.precision(.fractionLength(1)))) GB download",
+                      ModelBlurb.speed(id: entry.id).map { $0.prefix(1).uppercased() + $0.dropFirst() },
+                      entry.kind == .mlx ? "Needs a one-time extra setup" : nil]
+                        .compactMap { $0 }.joined(separator: " · "))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if let notes = entry.notes {
-                    Text(notes).font(.caption)
-                }
+                    .help("\(entry.kind == .mlx ? "MLX" : "Core ML") · \(entry.resolution) px · \(entry.repo)")
                 if let license = entry.license {
                     Text(license).font(.caption).foregroundStyle(.orange)
                 }
-                Label("About \(estimate, specifier: "%.0f") GB while generating: \(fit.label.lowercased())", systemImage: "memorychip")
+                Label("Memory: \(fit.label.lowercased()) (about \(estimate, specifier: "%.0f") GB)", systemImage: "memorychip")
                     .font(.caption)
                     .foregroundStyle(fit == .comfortable ? Color.secondary : fit == .tight ? .orange : .red)
             }
@@ -617,7 +655,12 @@ private struct CatalogRow: View {
                 Text("\(Int(download.fraction * 100))%").monospacedDigit().frame(width: 40)
                 Button("Cancel") { store.cancelDownload(entry) }
             } else {
-                Button("Download") { store.download(entry) }
+                Button("Download") {
+                    store.download(entry)
+                    // MLX models also need the Python runtime; set it up alongside.
+                    if entry.kind == .mlx, runtime.status == .notInstalled { runtime.install() }
+                }
+                .buttonStyle(.borderedProminent)
             }
         }
         .padding(.vertical, 4)
