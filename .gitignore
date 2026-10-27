@@ -1,0 +1,8 @@
+*.xcodeproj/
+build/
+DerivedData/
+.DS_Store
+xcuserdata/
+tools/convert/.venv/
+tools/convert/output/
+__pycache__/

@@ -1,0 +1,8 @@
+# Apple's converter (torch -> Core ML) for Stable Diffusion checkpoints.
+# Pinned to the same commit the app's Swift package uses.
+python_coreml_stable_diffusion @ git+https://github.com/apple/ml-stable-diffusion@ea2805dc1945be20561c77e5f6d1d9a5a637cda2
+# LoRA loading/fusing in diffusers 0.30.x (pinned by the converter above).
+peft==0.12.0
+# Newest versions coremltools 9 is tested with.
+torch==2.7.0
+scikit-learn==1.5.1

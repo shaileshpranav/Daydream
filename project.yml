@@ -1,0 +1,36 @@
+name: CoreMLImageGen
+options:
+  bundleIdPrefix: com.shailesh
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+
+packages:
+  StableDiffusion:
+    url: https://github.com/apple/ml-stable-diffusion
+    revision: ea2805dc1945be20561c77e5f6d1d9a5a637cda2
+
+targets:
+  CoreMLImageGen:
+    type: application
+    platform: macOS
+    sources:
+      - App
+      - Core
+    dependencies:
+      - package: StableDiffusion
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.shailesh.CoreMLImageGen
+        PRODUCT_NAME: CoreMLImageGen
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: CoreML Image Gen
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.graphics-design
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        ENABLE_HARDENED_RUNTIME: NO
+        # Not sandboxed: the app reads model folders anywhere and writes to ~/Pictures.
+        ENABLE_APP_SANDBOX: NO
