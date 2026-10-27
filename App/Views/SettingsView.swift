@@ -3,9 +3,15 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(Generator.self) private var generator
     @AppStorage("previewEvery") private var previewEvery = 5
+    @AppStorage("preloadModels") private var preloadModels = true
 
     var body: some View {
         Form {
+            Toggle("Load a model as soon as it's selected", isOn: $preloadModels)
+            Text("Generate then starts at once instead of waiting for the model to load. Turn off to keep memory free until you generate.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             Picker("Live preview", selection: $previewEvery) {
                 Text("Off").tag(0)
                 ForEach([2, 5, 10], id: \.self) { Text("Every \($0) steps").tag($0) }

@@ -7,11 +7,12 @@ import UniformTypeIdentifiers
 struct MLXLoRASection: View {
     let model: InstalledModel
     @Binding var loras: [LoRARef]
+    @Environment(LoRALibrary.self) private var library
+    @Environment(AppState.self) private var app
     @State private var picking = false
     @State private var repo = ""
     @State private var checkingRepo = false
     @State private var message: String?
-    @State private var library: [(url: URL, result: LoRAInspector.Result)] = []
 
     private var base: LoRABase? { model.loraBase }
 
@@ -35,6 +36,15 @@ struct MLXLoRASection: View {
                         Text(lora.scale, format: .number.precision(.fractionLength(2)))
                             .monospacedDigit()
                             .frame(width: 36)
+                    }
+                    let words = triggerWords(for: lora)
+                    if !words.isEmpty, !app.request.prompt.localizedCaseInsensitiveContains(words) {
+                        Button("Insert trigger words: \(words)") {
+                            let prompt = app.request.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                            app.request.prompt = prompt.isEmpty ? words : "\(words), \(prompt)"
+                        }
+                        .buttonStyle(.link)
+                        .font(.caption)
                     }
                 }
                 .help(lora.source)
@@ -67,12 +77,11 @@ struct MLXLoRASection: View {
         }
         .onAppear {
             dropIncompatible()  // e.g. came back from a Core ML model to a different MLX one
-            reloadLibrary()
+            library.reload()
         }
         .onChange(of: model.id) {
             message = nil
             dropIncompatible()
-            reloadLibrary()
         }
         .fileDialogDefaultDirectory(ModelStore.lorasFolder)
         .fileImporter(isPresented: $picking,
@@ -87,43 +96,37 @@ struct MLXLoRASection: View {
     // MARK: Loras folder
 
     private var libraryMenu: some View {
-        let compatible = library.filter { $0.result == .known(base!) }
-        let others = library.filter { $0.result != .known(base!) }
+        let compatible = library.items.filter { $0.result == .known(base!) }
+        let others = library.items.filter { $0.result != .known(base!) }
         return Menu("Add from Loras Folder (\(compatible.count))") {
             if compatible.isEmpty {
                 Text("No \(base!.label) LoRAs in the Loras folder")
             }
-            ForEach(compatible, id: \.url) { item in
+            ForEach(compatible) { item in
                 let added = loras.contains { $0.source == item.url.path }
-                Button(added ? "\(libraryName(item.url)) ✓" : libraryName(item.url)) {
-                    loras.append(LoRARef(source: item.url.path, base: base))
+                Button(added ? "\(item.name) ✓" : item.name) {
+                    loras.append(LoRARef(source: item.url.path, scale: library.settings(for: item.url).defaultScale, base: base))
                 }
                 .disabled(added)
             }
             if !others.isEmpty {
                 Divider()
                 Section("Not for \(base!.label)") {
-                    ForEach(others, id: \.url) { item in
-                        Text("\(libraryName(item.url)) — \(describe(item.result))")
+                    ForEach(others) { item in
+                        Text("\(item.name) — \(describe(item.result))")
                     }
                 }
             }
             Divider()
-            Button("Rescan Folder") { reloadLibrary() }
+            Button("Rescan Folder") { library.reload() }
             Button("Show Loras Folder in Finder") { NSWorkspace.shared.open(ModelStore.lorasFolder) }
         }
     }
 
-    private func reloadLibrary() {
-        library = ModelStore.libraryLoRAs().map { ($0, LoRAInspector.inspect(file: $0)) }
-    }
-
-    /// File name without extension, with its subfolder if it's in one ("flux2/Style").
-    private func libraryName(_ url: URL) -> String {
-        let root = ModelStore.lorasFolder.standardizedFileURL.path
-        var relative = url.standardizedFileURL.path
-        if relative.hasPrefix(root) { relative = String(relative.dropFirst(root.count)).trimmingCharacters(in: ["/"]) }
-        return (relative as NSString).deletingPathExtension
+    /// Trigger words saved for a local LoRA in the model manager.
+    private func triggerWords(for lora: LoRARef) -> String {
+        guard lora.source.hasPrefix("/") else { return "" }
+        return library.settings(for: URL(filePath: lora.source)).triggerWords.trimmingCharacters(in: .whitespaces)
     }
 
     private func describe(_ result: LoRAInspector.Result) -> String {
@@ -139,7 +142,7 @@ struct MLXLoRASection: View {
         guard let base, !loras.contains(where: { $0.source == url.path }) else { return }
         switch LoRAInspector.inspect(file: url) {
         case .known(base):
-            loras.append(LoRARef(source: url.path, base: base))
+            loras.append(LoRARef(source: url.path, scale: library.settings(for: url).defaultScale, base: base))
             message = nil
         case .known(let other):
             message = "\(url.lastPathComponent) is a \(other.label) LoRA; \(model.name) needs a \(base.label) LoRA."

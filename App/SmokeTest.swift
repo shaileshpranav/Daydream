@@ -1,4 +1,5 @@
 #if DEBUG
+import CoreGraphics
 import Foundation
 
 /// Headless end-to-end check of download + load + generate, for Debug builds:
@@ -10,6 +11,18 @@ import Foundation
 enum SmokeTest {
     static func runIfRequested(store: ModelStore, generator: Generator, queue: GenerationQueue) {
         let defaults = UserDefaults.standard
+        if let id = defaults.string(forKey: "preloadTest") {
+            Task { exit(await runPreloadTest(id: id, store: store, generator: generator) ? 0 : 1) }
+            return
+        }
+        if defaults.bool(forKey: "managerTest") {
+            Task { exit(await runManagerTest(store: store) ? 0 : 1) }
+            return
+        }
+        if let id = defaults.string(forKey: "img2imgTest"), let start = defaults.string(forKey: "start") {
+            Task { exit(await runImg2ImgTest(id: id, start: start, store: store, generator: generator) ? 0 : 1) }
+            return
+        }
         if let id = defaults.string(forKey: "queueTest") {
             Task { exit(await runQueueTest(id: id, store: store, generator: generator, queue: queue) ? 0 : 1) }
             return
@@ -29,6 +42,146 @@ enum SmokeTest {
                                steps: defaults.integer(forKey: "steps"))
             exit(ok ? 0 : 1)
         }
+    }
+
+    /// `-preloadTest <model id>` starts a preload and immediately asks for an image: the
+    /// generate must wait for the preload (not fail) and the model must load only once.
+    private static func runPreloadTest(id: String, store: ModelStore, generator: Generator) async -> Bool {
+        func log(_ s: String) { print("[preload] \(s)"); fflush(stdout) }
+        guard let model = store.model(id: id) else { log("\(id) isn't installed"); return false }
+        generator.unloadModel()
+        var request = GenerationRequest(prompt: "a small wooden cabin in a pine forest, morning fog")
+        request.steps = model.recommended.steps
+        request.guidance = model.recommended.guidance
+        request.seed = 11
+
+        var loads = 0, wasLoading = false
+        let watcher = Task { @MainActor in
+            while !Task.isCancelled {
+                if case .loading = generator.phase { if !wasLoading { loads += 1 }; wasLoading = true } else { wasLoading = false }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+        let start = Date()
+        let preload = Task { await generator.preload(model: model, request: request) }
+        try? await Task.sleep(for: .milliseconds(200))  // generate arrives mid-preload
+        let outcome = await generator.generate(model: model, request: request, previewEvery: 0)
+        await preload.value
+        watcher.cancel()
+        log("outcome: \(outcome), model loads: \(loads), total \(String(format: "%.1f", Date().timeIntervalSince(start))) s")
+
+        // A second preload of the loaded model must be a no-op.
+        let again = Date()
+        await generator.preload(model: model, request: request)
+        let noop = Date().timeIntervalSince(again)
+        log("preload of the already-loaded model took \(String(format: "%.3f", noop)) s")
+        generator.unloadModel()
+
+        let ok: Bool = { if case .saved = outcome { return loads == 1 && noop < 0.5 }; return false }()
+        log(ok ? "PASS" : "FAIL")
+        return ok
+    }
+
+    /// `-managerTest YES` checks family detection, model edits and the LoRA library.
+    private static func runManagerTest(store: ModelStore) async -> Bool {
+        func log(_ s: String) { print("[manager] \(s)"); fflush(stdout) }
+        var ok = true
+        let repos: [(String, String?)] = [
+            ("mflux-community/z-image-turbo-mflux-q4", "z-image-turbo"),
+            ("mflux-community/z-image-base-mflux-q8", "z-image"),
+            ("mflux-community/flux2-klein-9b-mflux-q4", "flux2-klein-9b"),
+            ("mflux-community/flux2-klein-4b-mflux-q6", "flux2-klein-4b"),
+            ("mflux-community/flux2-klein-9b-kv-mflux-q4", nil),
+            ("mflux-community/flux-2-klein-base-4b-mflux-q4", nil),
+            ("mflux-community/qwen-image-2-1-turbo-mflux-q4", "qwen-image-2.1-turbo"),
+            ("mflux-community/qwen-image-2-1-mflux-q5", "qwen-image-2.1"),
+            ("mflux-community/qwen-image-edit-2511-mflux-q4", nil),
+            ("filipstrand/Z-Image-Turbo-mflux-4bit", "z-image-turbo"),
+        ]
+        for (repo, expected) in repos {
+            let got = MLXFamilies.detect(repo: repo)?.id
+            let pass = got == expected
+            ok = ok && pass
+            log("detect \(repo) -> \(got ?? "nil") \(pass ? "✓" : "✗ expected \(expected ?? "nil")") quant=\(MLXFamilies.quantization(repo: repo) ?? "-")")
+        }
+        // A real repo listing, as Install does before downloading (no download here).
+        do {
+            let files = try await HuggingFace.listFiles(repo: "mflux-community/flux2-klein-9b-mflux-q4", prefix: "")
+            let gb = Double(files.reduce(Int64(0)) { $0 + $1.size }) / 1e9
+            let estimate = MemoryEstimate.gigabytes(weightsGB: gb, kind: .mlx, resolution: 1024)
+            log("flux2-klein-9b q4: \(String(format: "%.1f", gb)) GB, est. \(String(format: "%.1f", estimate)) GB → \(MemoryEstimate.fit(estimate).label)")
+        } catch {
+            log("listing failed: \(error.localizedDescription)"); ok = false
+        }
+        // Rename + defaults round trip through model.json.
+        if var model = store.installed.first {
+            let original = model
+            model.name = original.name + " (renamed)"
+            model.defaults = ModelDefaults(steps: 7, guidance: 2.5, supportsNegativePrompt: original.defaults?.supportsNegativePrompt)
+            store.update(model)
+            let reread = store.model(id: model.id)
+            let pass = reread?.name == model.name && reread?.defaults?.steps == 7
+            ok = ok && pass
+            log("rename/defaults round trip: \(pass ? "✓" : "✗")")
+            store.update(original)
+            log("restored: \(store.model(id: original.id)?.name == original.name && store.model(id: original.id)?.defaults == original.defaults ? "✓" : "✗")")
+        }
+        let library = LoRALibrary()
+        for item in library.items {
+            log("lora \(item.name): \(item.base?.label ?? "unknown"), \(item.trainingSteps.map { "\($0) steps" } ?? "-"), suggestions \(item.suggestedTriggers)")
+        }
+        log(ok ? "PASS" : "FAIL")
+        return ok
+    }
+
+    /// `-img2imgTest <model id> -start <image path>` generates from the start image at
+    /// change 0.3 and 0.9 and checks the low-change result stays closer to the start.
+    private static func runImg2ImgTest(id: String, start: String, store: ModelStore, generator: Generator) async -> Bool {
+        func log(_ s: String) { print("[img2img] \(s)"); fflush(stdout) }
+        guard let model = store.model(id: id) else { log("\(id) isn't installed"); return false }
+        guard let startPath = try? StartImages.importImage(URL(filePath: start)),
+              let startImage = StartImages.load(startPath) else { log("can't read \(start)"); return false }
+
+        /// Mean absolute RGB difference (0–255) after scaling both to 64×64.
+        func distance(_ a: CGImage, _ b: CGImage) -> Double {
+            func pixels(_ image: CGImage) -> [UInt8] {
+                var data = [UInt8](repeating: 0, count: 64 * 64 * 4)
+                let ctx = CGContext(data: &data, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 256,
+                                    space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                ctx.draw(StartImages.fill(image, width: 64, height: 64)!, in: CGRect(x: 0, y: 0, width: 64, height: 64))
+                return data
+            }
+            let p = pixels(a), q = pixels(b)
+            var sum = 0
+            for i in stride(from: 0, to: p.count, by: 4) {
+                for c in 0..<3 { sum += abs(Int(p[i + c]) - Int(q[i + c])) }
+            }
+            return Double(sum) / Double(64 * 64 * 3)
+        }
+
+        var request = GenerationRequest(prompt: "a fox in snow, oil painting with thick visible brush strokes")
+        request.seed = 3
+        request.steps = model.recommended.steps
+        request.guidance = model.recommended.guidance
+        request.startImage = startPath
+        if model.kind == .mlx { request.aspect = StartImages.closestAspect(to: startPath) }
+
+        var distances: [Double] = []
+        for change in [0.3, 0.9] {
+            request.change = change
+            let outcome = await generator.generate(model: model, request: request, previewEvery: 0)
+            guard case .saved(let record) = outcome, let image = generator.lastImage else {
+                log("change \(change): \(outcome)"); return false
+            }
+            let d = distance(startImage, image)
+            distances.append(d)
+            log("change \(change): distance from start \(String(format: "%.1f", d)), \(String(format: "%.1f", record.seconds)) s, \(image.width)×\(image.height), saved \(record.fileName)")
+        }
+        generator.unloadModel()
+        let ok = distances[0] < distances[1]
+        log(ok ? "PASS (low change stays closer to the start image)" : "FAIL")
+        return ok
     }
 
     /// `-queueTest sd15-palettized` queues a batch of 3 (10 steps each), cancels the

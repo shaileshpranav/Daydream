@@ -55,15 +55,20 @@ def make_model(family, path, loras, float16):
         # M1 GPUs have no native bfloat16; float16 compute is ~25% faster there.
         compute_precision=mx.float16 if float16 else None,
     )
-    if family == "z-image-turbo":
-        from mflux.models.z_image import ZImageTurbo
-        return ZImageTurbo(model_config=ModelConfig.z_image_turbo(), **kwargs)
-    if family == "flux2-klein-4b":
+    # Keep in sync with MLXFamilies.all in Core/MLXFamilies.swift.
+    if family in ("z-image-turbo", "z-image"):
+        from mflux.models.z_image import ZImage, ZImageTurbo
+        if family == "z-image-turbo":
+            return ZImageTurbo(model_config=ModelConfig.z_image_turbo(), **kwargs)
+        return ZImage(model_config=ModelConfig.z_image(), **kwargs)
+    if family in ("flux2-klein-4b", "flux2-klein-9b"):
         from mflux.models.flux2 import Flux2Klein
-        return Flux2Klein(model_config=ModelConfig.flux2_klein_4b(), **kwargs)
-    if family == "qwen-image-2.1-turbo":
+        config = ModelConfig.flux2_klein_4b() if family == "flux2-klein-4b" else ModelConfig.flux2_klein_9b()
+        return Flux2Klein(model_config=config, **kwargs)
+    if family in ("qwen-image-2.1-turbo", "qwen-image-2.1"):
         from mflux.models.qwen21.variants.txt2img.qwen_image_21 import QwenImage21
-        return QwenImage21(model_config=ModelConfig.qwen_image_21_turbo(), **kwargs)
+        config = ModelConfig.qwen_image_21_turbo() if family == "qwen-image-2.1-turbo" else ModelConfig.qwen_image_21()
+        return QwenImage21(model_config=config, **kwargs)
     raise ValueError(f"Unknown model family: {family}")
 
 
@@ -88,8 +93,12 @@ def generate(model, family, req):
         height=int(req["height"]),
         guidance=float(req["guidance"]),
     )
+    # Image-to-image: image_strength is the share of steps skipped (higher keeps more).
+    if req.get("image_path"):
+        kwargs["image_path"] = req["image_path"]
+        kwargs["image_strength"] = float(req["image_strength"])
     # FLUX.2 Klein is guidance-distilled and takes no negative prompt.
-    if family != "flux2-klein-4b" and req.get("negative_prompt"):
+    if not family.startswith("flux2-klein") and req.get("negative_prompt"):
         kwargs["negative_prompt"] = req["negative_prompt"]
     return model.generate_image(**kwargs)
 
@@ -113,6 +122,12 @@ def main():
                 mx.clear_cache()
                 family = req["family"]
                 model = make_model(family, req["path"], req.get("loras", []), req.get("float16", True))
+                # Encode image-to-image start images in 512 px tiles. Encoding a 1024 px image
+                # in one pass adds ~5.7 GB (measured on FLUX.2 Klein 4B: 10.3 GB peak vs 6.9 GB
+                # tiled), enough to push a 16 GB Mac into heavy swapping. Decoding is unchanged:
+                # no decode tiles, so no seams.
+                from mflux.models.common.vae.tiling_config import TilingConfig
+                model.tiling_config = TilingConfig(vae_decode_tiles_per_dim=None)
                 # Registered once per loaded model; mflux has no unregister.
                 model.callbacks.register(Progress())
                 emit("loaded", seconds=time.time() - start)

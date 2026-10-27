@@ -9,6 +9,8 @@ final class ModelStore {
     struct DownloadState {
         var fraction: Double
         var task: Task<Void, Never>?
+        /// What's being downloaded (a catalog entry, or one made for a Hugging Face repo).
+        var entry: CatalogEntry
     }
 
     private(set) var installed: [InstalledModel] = []
@@ -121,7 +123,59 @@ final class ModelStore {
             self.downloads[entry.id] = nil
             self.refresh()
         }
-        downloads[entry.id] = DownloadState(fraction: 0, task: task)
+        downloads[entry.id] = DownloadState(fraction: 0, task: task, entry: entry)
+    }
+
+    /// Installs an mflux-format model from any Hugging Face repo, e.g.
+    /// "mflux-community/flux2-klein-9b-mflux-q4". Returns the entry being downloaded.
+    @discardableResult
+    func installFromHuggingFace(repo: String, family: MLXFamily) async throws -> CatalogEntry {
+        let repo = repo.trimmingCharacters(in: .whitespaces)
+        let files = try await HuggingFace.listFiles(repo: repo, prefix: "")
+        guard files.contains(where: { $0.path.hasSuffix(".safetensors") }) else {
+            throw RuntimeError("\(repo) has no .safetensors weights, so it isn't an mflux model.")
+        }
+        let bytes = files.reduce(Int64(0)) { $0 + $1.size }
+        let slug = repo.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" }
+        let quant = MLXFamilies.quantization(repo: repo).map { ", \($0)" } ?? ""
+        let entry = CatalogEntry(
+            id: "hf-" + String(slug), name: "\(family.label) (MLX\(quant))", kind: .mlx, repo: repo,
+            zip: nil, folder: "", exclude: [".gitattributes", "README.md"], computeUnits: .cpuAndGPU,
+            resolution: family.resolution, approxGB: Double(bytes) / 1e9,
+            notes: "Installed from \(repo).", license: nil, mlxFamily: family.id, defaults: family.defaults)
+        guard !installed.contains(where: { $0.id == entry.id }) else {
+            throw RuntimeError("\(repo) is already installed.")
+        }
+        download(entry)
+        return entry
+    }
+
+    // MARK: Editing (model manager)
+
+    /// Saves edits to a model's name, defaults, resolution or compute units.
+    func update(_ model: InstalledModel) {
+        do {
+            try Self.writeManifest(model, to: model.folder)
+        } catch {
+            lastError = "Couldn't save \(model.name): \(error.localizedDescription)"
+        }
+        refresh()
+    }
+
+    /// Moves a model to the Trash (recoverable, unlike deleting outright).
+    func moveToTrash(_ model: InstalledModel) {
+        do {
+            try FileManager.default.trashItem(at: model.folder, resultingItemURL: nil)
+        } catch {
+            lastError = "Couldn't move \(model.name) to the Trash: \(error.localizedDescription)"
+        }
+        refresh()
+    }
+
+    /// Free space on the disk holding the models.
+    var freeDiskBytes: Int64? {
+        let values = try? root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return values?.volumeAvailableCapacityForImportantUsage
     }
 
     func cancelDownload(_ entry: CatalogEntry) {
@@ -151,24 +205,29 @@ final class ModelStore {
         for file in files {
             try Task.checkCancellation()
             let relative = entry.zip != nil ? file.path : String(file.path.dropFirst((entry.folder ?? "").count))
-            // Multi-GB downloads over a flaky connection: retry a file a few times
-            // (from its start) instead of failing the whole model on one dropped connection.
+            // Multi-GB downloads over a flaky connection: retry a file a few times instead
+            // of failing the whole model on one dropped connection, resuming from the byte
+            // it stopped at when the server allows it (Hugging Face does).
             var attempt = 0
+            var resumeData: Data?
             while true {
                 attempt += 1
-                let before = await MainActor.run { counter.bytes }
+                let before = counter.bytes
                 do {
                     try await FileDownloader.download(HuggingFace.resolveURL(repo: entry.repo, path: file.path),
-                                                      to: staging.appending(path: relative)) { bytes in
+                                                      to: staging.appending(path: relative),
+                                                      resumeData: resumeData) { bytes in
                         Task { @MainActor in
                             counter.bytes += bytes
                             self.downloads[entry.id]?.fraction = Double(counter.bytes) / total
                         }
                     }
                     break
-                } catch let error as URLError where error.code != .cancelled && attempt < 5 {
-                    await MainActor.run { counter.bytes = before }
-                    try await Task.sleep(for: .seconds(2 * attempt))
+                } catch let error as URLError where error.code != .cancelled && attempt < 8 {
+                    resumeData = error.downloadTaskResumeData
+                    // Without resume data the file starts over, so its bytes are counted again.
+                    if resumeData == nil { counter.bytes = before }
+                    try await Task.sleep(for: .seconds(min(2 * attempt, 10)))
                 }
             }
         }
@@ -188,7 +247,8 @@ final class ModelStore {
         try fm.moveItem(at: resources, to: dest)
         try Self.writeManifest(InstalledModel(id: entry.id, name: entry.name, kind: entry.kind,
                                               computeUnits: entry.computeUnits, resolution: entry.resolution,
-                                              mlxFamily: entry.mlxFamily, defaults: entry.defaults), to: dest)
+                                              mlxFamily: entry.mlxFamily, defaults: entry.defaults,
+                                              source: entry.repo), to: dest)
     }
 
     // MARK: Helpers

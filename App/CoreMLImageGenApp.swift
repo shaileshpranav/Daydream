@@ -7,6 +7,7 @@ struct CoreMLImageGenApp: App {
     @State private var generator: Generator
     @State private var queue: GenerationQueue
     @State private var mlxRuntime = MLXRuntime()
+    @State private var loraLibrary = LoRALibrary()
 
     init() {
         let generator = Generator()
@@ -22,6 +23,7 @@ struct CoreMLImageGenApp: App {
                 .environment(generator)
                 .environment(queue)
                 .environment(mlxRuntime)
+                .environment(loraLibrary)
                 .frame(minWidth: 900, minHeight: 620)
                 #if DEBUG
                 .task { SmokeTest.runIfRequested(store: store, generator: generator, queue: queue) }
@@ -65,6 +67,32 @@ final class AppState {
     /// Set while restoring from the gallery so switching model doesn't overwrite the
     /// restored steps and guidance with the model's defaults.
     var isRestoring = false
+
+    /// A finished image the user clicked in the queue, shown instead of the latest one.
+    var viewedRecord: GenerationRecord?
+
+    /// True while a debug smoke test drives the app, so it doesn't preload models itself.
+    var automationRunning = ["smokeTest", "queueTest", "img2imgTest", "loraTest", "enhanceTest", "preloadTest"]
+        .contains { UserDefaults.standard.object(forKey: $0) != nil }
+
+    var startImageError: String?
+
+    /// Makes `url` the image-to-image start image. For MLX models (any size) the aspect
+    /// is switched to the one closest to the image so it isn't squashed.
+    func useAsStartImage(_ url: URL, for model: InstalledModel?) {
+        do {
+            let path = try StartImages.importImage(url)
+            request.startImage = path
+            if request.change == nil { request.change = 0.6 }
+            if model?.kind.hasFixedSize == false, let aspect = StartImages.closestAspect(to: path) {
+                request.aspect = aspect
+            }
+            startImageError = nil
+            section = .generate
+        } catch {
+            startImageError = error.localizedDescription
+        }
+    }
 
     func restore(_ record: GenerationRecord) {
         isRestoring = selectedModelID != record.modelID

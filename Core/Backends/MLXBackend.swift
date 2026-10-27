@@ -67,7 +67,13 @@ final class MLXBackend: ImageBackend {
         let out = FileManager.default.temporaryDirectory.appending(path: "mlx-\(UUID().uuidString).png")
         defer { try? FileManager.default.removeItem(at: out) }
         let supportsNegative = model.defaults?.supportsNegativePrompt ?? true
-        try send([
+        var startImage: [String: Any] = [:]
+        if let path = request.startImage {
+            // mflux's image_strength is the share of steps skipped (higher keeps more of
+            // the image), the inverse of `change`.
+            startImage = ["image_path": path, "image_strength": 1 - min(max(request.change ?? 0.6, 0.05), 1)]
+        }
+        try send(startImage.merging([
             "op": "generate",
             "prompt": request.prompt,
             "negative_prompt": supportsNegative ? request.negativePrompt : "",
@@ -77,7 +83,7 @@ final class MLXBackend: ImageBackend {
             "width": size.width,
             "height": size.height,
             "out": out.path,
-        ])
+        ]) { a, _ in a })
 
         var cancelSent = false
         while true {

@@ -3,6 +3,7 @@ import SwiftUI
 struct GalleryView: View {
     @Environment(AppState.self) private var app
     @Environment(Generator.self) private var generator
+    @Environment(ModelStore.self) private var store
     @State private var records: [GenerationRecord] = []
 
     private let columns = [GridItem(.adaptive(minimum: 180), spacing: 12)]
@@ -20,6 +21,10 @@ struct GalleryView: View {
                                 .onTapGesture { app.restore(record) }
                                 .contextMenu {
                                     Button("Use these settings") { app.restore(record) }
+                                    Button("Use as Start Image") {
+                                        app.useAsStartImage(ImageSaver.folder.appending(path: record.fileName),
+                                                            for: store.model(id: app.selectedModelID))
+                                    }
                                     Button("Show in Finder") {
                                         NSWorkspace.shared.activateFileViewerSelecting([ImageSaver.folder.appending(path: record.fileName)])
                                     }
@@ -42,7 +47,10 @@ struct GalleryView: View {
             }
         }
         .onAppear(perform: reload)
-        .onChange(of: generator.lastRecord) { reload() }
+        .onChange(of: generator.lastRecord) {
+            // A new image: add it at the top rather than rescanning the whole folder.
+            if let record = generator.lastRecord, !records.contains(record) { records.insert(record, at: 0) }
+        }
     }
 
     private func reload() {

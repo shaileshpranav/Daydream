@@ -65,23 +65,44 @@ enum LoRAInspector {
         let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
         let key = "\(url.path)|\(mtime?.timeIntervalSince1970 ?? 0)" as NSString
         if let hit = cache.object(forKey: key) { return hit.result }
-        let result: Result
-        do {
-            let handle = try FileHandle(forReadingFrom: url)
-            defer { try? handle.close() }
-            guard let lengthData = try handle.read(upToCount: 8), lengthData.count == 8 else {
-                throw CocoaError(.fileReadCorruptFile)
-            }
-            let length = Int(lengthData.withUnsafeBytes { $0.loadUnaligned(as: UInt64.self).littleEndian })
-            guard length > 0, length < 100_000_000, let header = try handle.read(upToCount: length) else {
-                throw CocoaError(.fileReadCorruptFile)
-            }
-            result = classify(header: header)
-        } catch {
-            result = .unknown("Couldn't read the file's header")
-        }
+        let result = readHeader(url).map(classify(header:)) ?? .unknown("Couldn't read the file's header")
         cache.setObject(Box(result), forKey: key)
         return result
+    }
+
+    /// The raw JSON header of a .safetensors file (tensor names, shapes and metadata).
+    static func readHeader(_ url: URL) -> Data? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let lengthData = try? handle.read(upToCount: 8), lengthData.count == 8 else { return nil }
+        let length = Int(lengthData.withUnsafeBytes { $0.loadUnaligned(as: UInt64.self).littleEndian })
+        guard length > 0, length < 100_000_000 else { return nil }
+        return try? handle.read(upToCount: length)
+    }
+
+    /// The training metadata a LoRA carries (kohya / ai-toolkit `__metadata__`).
+    static func metadata(file url: URL) -> [String: String] {
+        guard let header = readHeader(url),
+              let json = try? JSONSerialization.jsonObject(with: header) as? [String: Any] else { return [:] }
+        return json["__metadata__"] as? [String: String] ?? [:]
+    }
+
+    /// Trigger words suggested by the metadata: an explicit trigger phrase if the trainer
+    /// recorded one, else the most frequent caption tags.
+    static func suggestedTriggers(_ metadata: [String: String]) -> [String] {
+        for key in ["modelspec.trigger_phrase", "trigger_phrase", "trigger_word", "instance_prompt", "ss_trigger_word"] {
+            if let value = metadata[key]?.trimmingCharacters(in: .whitespaces), !value.isEmpty { return [value] }
+        }
+        guard let data = metadata["ss_tag_frequency"]?.data(using: .utf8),
+              let folders = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Int]] else { return [] }
+        var counts: [String: Int] = [:]
+        for tags in folders.values {
+            for (tag, n) in tags {
+                let tag = tag.trimmingCharacters(in: .whitespaces)
+                if !tag.isEmpty { counts[tag, default: 0] += n }
+            }
+        }
+        return counts.sorted { $0.value > $1.value }.prefix(6).map(\.key)
     }
 
     /// Detects the base model of a LoRA in a Hugging Face repo by fetching only its

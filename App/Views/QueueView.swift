@@ -57,6 +57,10 @@ struct QueueView: View {
                 Button { app.restore(record) } label: { Image(systemName: "arrow.uturn.backward") }
                     .help("Use these settings")
                 Button {
+                    app.useAsStartImage(ImageSaver.folder.appending(path: record.fileName), for: job.model)
+                } label: { Image(systemName: "photo.badge.arrow.down") }
+                    .help("Use as start image")
+                Button {
                     NSWorkspace.shared.activateFileViewerSelecting([ImageSaver.folder.appending(path: record.fileName)])
                 } label: { Image(systemName: "folder") }
                     .help("Show in Finder")
@@ -68,13 +72,26 @@ struct QueueView: View {
         .buttonStyle(.borderless)
         .padding(.vertical, 3)
         .padding(.horizontal, 6)
-        .background(job.state == .running ? Color.accentColor.opacity(0.12) : .clear,
-                    in: RoundedRectangle(cornerRadius: 5))
+        .background(background(for: job), in: RoundedRectangle(cornerRadius: 5))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            // Click a finished image to look at it above the queue.
+            if case .done(let record) = job.state { app.viewedRecord = record }
+        }
+    }
+
+    private func background(for job: QueuedJob) -> Color {
+        if job.state == .running { return Color.accentColor.opacity(0.12) }
+        if case .done(let record) = job.state, app.viewedRecord == record { return Color.secondary.opacity(0.15) }
+        return .clear
     }
 
     private func detail(_ job: QueuedJob) -> String {
         var parts = [job.model.name, "seed \(job.request.seed)", "\(job.request.steps) steps"]
         if let loras = job.request.loras, !loras.isEmpty { parts.append("\(loras.count) LoRA") }
+        if job.request.isImageToImage {
+            parts.append("img2img \((job.request.change ?? 0.6).formatted(.number.precision(.fractionLength(2))))")
+        }
         switch job.state {
         case .running:
             switch generator.phase {

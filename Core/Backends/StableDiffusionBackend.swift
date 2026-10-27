@@ -47,6 +47,15 @@ final class StableDiffusionBackend: ImageBackend {
             config.encoderScaleFactor = 0.13025
             config.decoderScaleFactor = 0.13025
         }
+        if let path = request.startImage {
+            // Core ML models take a start image of exactly their fixed size. `strength`
+            // is how much to change it (1 ignores it), the same sense as `change`.
+            guard let image = StartImages.load(path),
+                  let sized = StartImages.fill(image, width: model.resolution, height: model.resolution)
+            else { throw RuntimeError("Couldn't read the start image.") }
+            config.startingImage = sized
+            config.strength = Float(min(max(request.change ?? 0.6, 0.05), 1))
+        }
 
         var cancelled = false
         let images = try pipeline.generateImages(configuration: config) { progress in

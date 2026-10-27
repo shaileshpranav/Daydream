@@ -18,6 +18,8 @@ final class Generator {
     private(set) var lastImage: CGImage?
     private(set) var lastRecord: GenerationRecord?
     private(set) var loadedModelID: String?
+    /// Estimated seconds left in the current image, once a couple of steps have run.
+    private(set) var etaSeconds: Double?
     var lastError: String?
 
     var isBusy: Bool { phase != .idle }
@@ -26,16 +28,53 @@ final class Generator {
     private let queue = DispatchQueue(label: "CoreMLImageGen.inference", qos: .userInitiated)
     private let cancelFlag = CancelFlag()
 
+    // Loads and generations take turns: a generate that arrives while a preload is
+    // running waits for it instead of failing.
+    private var workLocked = false
+    private var workWaiters: [CheckedContinuation<Void, Never>] = []
+
+    private func acquireWork() async {
+        if !workLocked {
+            workLocked = true
+            return
+        }
+        await withCheckedContinuation { workWaiters.append($0) }
+    }
+
+    private func releaseWork() {
+        if workWaiters.isEmpty {
+            workLocked = false
+        } else {
+            workWaiters.removeFirst().resume()
+        }
+    }
+
     func cancel() {
         cancelFlag.set(true)
     }
 
     /// Frees the resident model, e.g. before a large download or when switching.
     func unloadModel() {
-        guard !isBusy, let backend else { return }
+        guard !isBusy, !workLocked, let backend else { return }
         queue.async { backend.unload() }
         self.backend = nil
         loadedModelID = nil
+    }
+
+    /// Loads `model` ahead of time so the first Generate starts straight away.
+    /// Does nothing if it's already loaded (with the same LoRAs).
+    func preload(model: InstalledModel, request: GenerationRequest) async {
+        await acquireWork()
+        defer { releaseWork() }
+        if let backend, backend.model == model, loadedModelID == model.id, !backend.needsReload(for: request) {
+            return
+        }
+        do {
+            _ = try await prepareBackend(for: model, request: request)
+        } catch {
+            lastError = error.localizedDescription
+        }
+        phase = .idle
     }
 
     enum Outcome: Equatable {
@@ -46,10 +85,12 @@ final class Generator {
 
     @discardableResult
     func generate(model: InstalledModel, request: GenerationRequest, previewEvery: Int) async -> Outcome {
-        guard !isBusy else { return .failed("Another image is already generating.") }
+        await acquireWork()
+        defer { releaseWork() }
         let outcome: Outcome
         lastError = nil
         preview = nil
+        etaSeconds = nil
         cancelFlag.set(false)
 
         do {
@@ -57,11 +98,14 @@ final class Generator {
             phase = .generating(step: 0, total: request.steps)
             let start = Date()
             let flag = cancelFlag
+            let timer = StepTimer()
             let image: CGImage? = try await run {
                 try backend.generate(request, previewEvery: previewEvery) { step, total, preview in
+                    let eta = timer.record(step: step, total: total)
                     Task { @MainActor [weak self] in
                         guard let self, self.isBusy else { return }
                         self.phase = .generating(step: step, total: total)
+                        self.etaSeconds = eta
                         if let preview { self.preview = preview }
                     }
                     return !flag.isSet
@@ -82,6 +126,7 @@ final class Generator {
             outcome = .failed(error.localizedDescription)
         }
         phase = .idle
+        etaSeconds = nil
         return outcome
     }
 
@@ -113,6 +158,24 @@ final class Generator {
                 continuation.resume(with: Result { try work() })
             }
         }
+    }
+}
+
+/// Seconds-per-step from the steps seen so far. The first step is skipped as a baseline
+/// because it also includes text encoding and warm-up.
+private final class StepTimer: @unchecked Sendable {
+    private var first: (step: Int, time: Date)?
+
+    func record(step: Int, total: Int) -> Double? {
+        let now = Date()
+        guard let first else {
+            self.first = (step, now)
+            return nil
+        }
+        let done = step - first.step
+        guard done > 0 else { return nil }
+        let perStep = now.timeIntervalSince(first.time) / Double(done)
+        return perStep * Double(max(total - step, 0))
     }
 }
 

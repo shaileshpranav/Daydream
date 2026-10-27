@@ -1,5 +1,7 @@
+import AppKit
 import Foundation
 import Observation
+import UserNotifications
 
 /// One image to make: the model and settings are captured when it's queued, so editing
 /// the prompt afterwards doesn't change jobs already waiting.
@@ -52,11 +54,14 @@ final class GenerationQueue {
             r.seed = request.seed &+ UInt32(i)
             jobs.append(QueuedJob(model: model, request: r, previewEvery: previewEvery))
         }
+        if count > 1 || isRunning { QueueNotifier.requestPermissionIfNeeded() }
+        updateDockBadge()
         if !isRunning { Task { await runQueue() } }
     }
 
     func remove(_ id: QueuedJob.ID) {
         jobs.removeAll { $0.id == id && $0.state != .running }
+        updateDockBadge()
     }
 
     /// Moves a pending job up or down among the pending jobs.
@@ -76,6 +81,7 @@ final class GenerationQueue {
     func cancelAll() {
         jobs.removeAll { $0.state == .pending }
         generator.cancel()
+        updateDockBadge()
     }
 
     func clearFinished() {
@@ -84,18 +90,61 @@ final class GenerationQueue {
 
     private func runQueue() async {
         isRunning = true
-        defer { isRunning = false }
+        var finished = 0, failed = 0
+        defer {
+            isRunning = false
+            updateDockBadge()
+            QueueNotifier.queueFinished(images: finished, failed: failed)
+        }
         while let index = jobs.firstIndex(where: { $0.state == .pending }) {
             jobs[index].state = .running
+            updateDockBadge()
             let job = jobs[index]
             let outcome = await generator.generate(model: job.model, request: job.request, previewEvery: job.previewEvery)
             // The job may have moved while it ran (others removed/reordered); find it again.
             guard let i = jobs.firstIndex(where: { $0.id == job.id }) else { continue }
             switch outcome {
-            case .saved(let record): jobs[i].state = .done(record)
-            case .cancelled: jobs[i].state = .cancelled
-            case .failed(let message): jobs[i].state = .failed(message)
+            case .saved(let record):
+                jobs[i].state = .done(record)
+                finished += 1
+            case .cancelled:
+                jobs[i].state = .cancelled
+            case .failed(let message):
+                jobs[i].state = .failed(message)
+                failed += 1
             }
         }
+    }
+
+    /// Shows how many images are still to come on the Dock icon.
+    private func updateDockBadge() {
+        let remaining = pendingCount + (runningJob == nil ? 0 : 1)
+        NSApp?.dockTile.badgeLabel = remaining > 0 ? "\(remaining)" : nil
+    }
+}
+
+/// Tells the user a queue run finished while they were in another app.
+@MainActor
+enum QueueNotifier {
+    private static var authorized = false
+
+    /// Asks once, the first time a batch is queued.
+    static func requestPermissionIfNeeded() {
+        guard !authorized else { return }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            Task { @MainActor in authorized = granted }
+        }
+    }
+
+    static func queueFinished(images: Int, failed: Int) {
+        // Only worth interrupting for when the user isn't looking and it took a while.
+        guard authorized, images + failed > 1, NSApp?.isActive == false else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Queue finished"
+        content.body = failed == 0
+            ? "\(images) image\(images == 1 ? "" : "s") ready."
+            : "\(images) image\(images == 1 ? "" : "s") ready, \(failed) failed."
+        content.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
 }

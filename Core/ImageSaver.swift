@@ -49,14 +49,25 @@ enum ImageSaver {
             .sorted { $0.date > $1.date }
     }
 
+    /// Gallery thumbnails, kept so scrolling back doesn't decode 1024-px PNGs again.
+    private static let thumbnails: NSCache<NSString, CGImage> = {
+        let cache = NSCache<NSString, CGImage>()
+        cache.countLimit = 600
+        return cache
+    }()
+
     static func thumbnail(for record: GenerationRecord, maxPixels: Int = 384) -> CGImage? {
+        let key = "\(record.fileName)@\(maxPixels)" as NSString
+        if let cached = thumbnails.object(forKey: key) { return cached }
         let url = folder.appending(path: record.fileName)
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceThumbnailMaxPixelSize: maxPixels,
         ]
-        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        if let image { thumbnails.setObject(image, forKey: key) }
+        return image
     }
 
     static func delete(_ record: GenerationRecord) {

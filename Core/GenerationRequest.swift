@@ -55,6 +55,12 @@ struct GenerationRequest: Codable, Equatable {
     // Optional so records saved before these existed still decode.
     var aspect: AspectChoice? = .square
     var loras: [LoRARef]? = []
+    /// Image-to-image: a start image (a copy in StartImages.folder) and how much to
+    /// change it, 0 = keep it as is, 1 = ignore it entirely.
+    var startImage: String?
+    var change: Double? = 0.6
+
+    var isImageToImage: Bool { startImage != nil }
 
     mutating func randomizeSeed() {
         seed = UInt32.random(in: 0...UInt32.max)

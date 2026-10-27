@@ -4,9 +4,13 @@ A native SwiftUI Mac app that runs text-to-image models locally. It is tuned for
 
 - **Generate**: prompt, negative prompt, steps, guidance, seed, scheduler, live preview, and cancel. Every image is saved automatically.
 - **Queue**: ⌘↩ adds the current settings as a job; it says **Add to Queue** while something is running. **Images: N** queues a batch with consecutive seeds (42, 43, 44…), so any one can be reproduced. The queue list under the image shows each job's progress and lets you reorder or remove waiting jobs, cancel the running one, cancel everything, clear finished jobs, and reuse a finished job's settings. Jobs run one at a time on the single resident model; consecutive jobs on the same model reuse it without reloading. Each job captures its settings when queued, so editing the prompt doesn't change jobs already waiting.
+- **Image-to-image**: in the **Start Image** section, drop an image or choose one, or pick **Use as Start Image** from a gallery image's menu or a finished queue job. **Change** (0.05–1) sets how much to redraw: low keeps the composition and details, high mostly follows the prompt. It works on every model. Core ML models scale and centre-crop the start image to their fixed size; MLX models switch to the aspect closest to the image. The start image is copied into `Application Support/CoreMLImageGen/StartImages`, so queued jobs and saved settings keep working if the original moves.
 - **Prompt enhancer** (⌘E): turns a short idea into a detailed prompt and negative prompt using Apple Intelligence, on device. See [Prompt enhancer](#prompt-enhancer).
 - **Gallery**: every image in `~/Pictures/CoreMLImageGen`. Click one to restore its prompt and settings.
-- **Models**: download Apple's pre-converted models from Hugging Face, import models you converted yourself, pick compute units per model, and delete models.
+- **Model manager**: models, LoRAs and installing new ones. See [Model manager](#model-manager).
+- **Fast start:** the selected model loads in the background 1.5 s after you pick it, so Generate starts at once. Turn this off in Settings to keep memory free until you generate.
+- **Seeds:** **New random seed each time** is on by default; the seed field shows the one used, so you can turn the toggle off and keep it to make variations.
+- **While it runs:** the progress bar shows time remaining. **Esc** cancels the current image. The Dock icon shows how many images are left, and a notification arrives when a batch finishes while you're in another app. Click a finished job in the queue to view its image.
 - Only **one model is resident at a time**. Switching models unloads the previous one first.
 
 ## Requirements
@@ -53,6 +57,25 @@ The **first load** of a model compiles it for this Mac's Neural Engine or GPU, w
 | FLUX.2 Klein 4B, 4-bit (MLX) | 4 | ~6 s (no compile step) | **82 s** at 1024×1024 | About 16 s per step plus text encoding and decode. Same seed gives identical pixels. Smaller aspect sizes are proportionally faster |
 
 The download speed of the Hugging Face models depends on your connection; 1.6 GB took about 29 minutes here.
+
+## Model manager
+The **Models** sidebar item has three tabs.
+
+**Models:** every installed model, with disk use and free space at the top. Select one to:
+- rename it;
+- see an estimate of how much memory it needs while generating on this Mac (comfortable, tight, or likely to swap);
+- edit the default steps and guidance it starts with (and **Reset to Built-in**), its base size (MLX) or compute units (Core ML);
+- **Load Now** or **Unload** it, or **Use in Generate**;
+- **Move to Trash**, with a confirmation; it stays recoverable until the Trash is emptied.
+
+**LoRAs:** everything in `Models/Loras`, with the base model each one is for, its size and training steps. For each, set a **default strength** and **trigger words**; suggestions come from its training captions when the file records them. In Generate, a LoRA then starts at that strength and offers **Insert trigger words**. You can import files, download a LoRA by Hugging Face repo, or move one to the Trash.
+
+**Add Models:**
+- **From Hugging Face (MLX):** paste any mflux-format repo (e.g. `mflux-community/flux2-klein-9b-mflux-q4`). The family is detected from the name, and you can change it. Supported families: Z-Image Turbo, Z-Image (base), FLUX.2 Klein 4B and 9B, Qwen-Image 2.1 Turbo and base.
+- **Catalog:** shows each model's download size and estimated memory.
+- **Import** your own Core ML conversion, and install the MLX runtime.
+
+Downloads resume from where they stopped after a dropped connection, instead of restarting multi-GB files.
 
 ## Convert your own checkpoint
 ```bash
@@ -111,8 +134,9 @@ Newer diffusion transformers have no practical Core ML conversion that fits 16 G
 - **Model defaults:** picking a model sets its steps and guidance (FLUX.2 Klein: 4 steps; Z-Image Turbo: 9 steps, guidance 0; Qwen-Image 2.1 Turbo: 8). FLUX.2 Klein takes no negative prompt, so that field hides.
 - **LoRAs without conversion:** put `.safetensors` files in `~/Library/Application Support/CoreMLImageGen/Models/Loras` (subfolders are fine). They're listed under **Add from Loras Folder** in the Generate screen's LoRA section, which also has **Rescan Folder** and **Show Loras Folder in Finder**. You can also add any file or a Hugging Face repo, then set its strength with a slider. LoRAs load with the model: changing them reloads the weights on the next generate, which takes seconds to a minute rather than an hour of conversion. The LoRA must match the model family.
 - **No live preview** for MLX models; you see step progress.
+- **Image-to-image memory:** start images are encoded in 512 px tiles. Encoding a 1024 px image in one pass added ~5.7 GB (FLUX.2 Klein 4B peaked at 10.3 GB, against 6.9 GB tiled), which made a 16 GB Mac swap so hard that one image took 16 minutes. Tiled, it takes 43–69 s.
 
-**Adding another mflux model:** add a family to `make_model()` in `mlx_worker.py` and an entry with `"kind": "mlx"`, its `mlxFamily` and `defaults` to `Core/catalog.json`. The repos at [huggingface.co/mflux-community](https://huggingface.co/mflux-community) are the pre-quantized weights.
+**Adding another mflux model:** for a supported family, use **Add Models → From Hugging Face**. To support a new family, add it to `make_model()` in `mlx_worker.py` and to `MLXFamilies.all` in `Core/MLXFamilies.swift` (with its defaults and repo-name detection); optionally add a catalog entry to `Core/catalog.json`. The repos at [huggingface.co/mflux-community](https://huggingface.co/mflux-community) are the pre-quantized weights.
 
 On 16 GB, prefer 4-bit (`-q4`) weights and keep other apps light. Qwen-Image 2.1 Turbo at about 10 GB is the upper limit.
 

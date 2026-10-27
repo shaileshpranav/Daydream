@@ -7,6 +7,9 @@ struct GenerateView: View {
     @Environment(GenerationQueue.self) private var queue
     @AppStorage("previewEvery") private var previewEvery = 5
     @AppStorage("batchCount") private var batchCount = 1
+    @AppStorage("randomSeed") private var randomSeed = true
+    @AppStorage("preloadModels") private var preloadModels = true
+    @State private var viewedImage: CGImage?
     @State private var enhancing = false
     @State private var beforeEnhance: PromptEnhancer.Result?
     @State private var enhanceError: String?
@@ -77,6 +80,11 @@ struct GenerateView: View {
                 enhanceRow
             }
 
+            StartImageSection(model: selectedModel)
+            if let error = app.startImageError {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
+
             if let selectedModel, selectedModel.kind == .mlx {
                 MLXLoRASection(model: selectedModel, loras: Binding(
                     get: { app.request.loras ?? [] },
@@ -95,13 +103,17 @@ struct GenerateView: View {
                 }
                 HStack {
                     TextField("Seed", value: $app.request.seed, format: .number.grouping(.never))
+                        .disabled(randomSeed)
                     Button {
                         app.request.randomizeSeed()
                     } label: {
                         Image(systemName: "dice")
                     }
                     .help("Random seed")
+                    .disabled(randomSeed)
                 }
+                Toggle("New random seed each time", isOn: $randomSeed)
+                    .help("Off: keep the seed to make variations of the same image (change only the prompt or settings)")
                 if selectedModel?.kind != .mlx {
                     Picker("Scheduler", selection: $app.request.scheduler) {
                         ForEach(SchedulerChoice.allCases) { Text($0.rawValue).tag($0) }
@@ -111,10 +123,14 @@ struct GenerateView: View {
 
             Section {
                 Stepper(value: $batchCount, in: 1...50) {
-                    Text(batchCount == 1 ? "Images: 1" : "Images: \(batchCount) (seeds \(app.request.seed)–\(app.request.seed &+ UInt32(batchCount - 1)))")
+                    Text(batchCount == 1 || randomSeed
+                         ? "Images: \(batchCount)"
+                         : "Images: \(batchCount) (seeds \(app.request.seed)–\(app.request.seed &+ UInt32(batchCount - 1)))")
                 }
                 Button {
                     guard let model = selectedModel else { return }
+                    // The seed field shows the seed actually used, so it can be kept or reused.
+                    if randomSeed { app.request.randomizeSeed() }
                     queue.enqueue(model: model, request: app.request, count: batchCount, previewEvery: previewEvery)
                 } label: {
                     Text(queue.isRunning ? "Add to Queue" : (batchCount == 1 ? "Generate" : "Generate \(batchCount)"))
@@ -126,6 +142,8 @@ struct GenerateView: View {
                 if queue.isRunning {
                     HStack {
                         Button("Cancel Current", role: .cancel) { queue.cancelCurrent() }
+                            .keyboardShortcut(.cancelAction)
+                            .help("Stop this image (Esc); the queue continues")
                         if queue.pendingCount > 0 {
                             Button("Cancel All (\(queue.pendingCount + 1))", role: .destructive) { queue.cancelAll() }
                         }
@@ -138,6 +156,19 @@ struct GenerateView: View {
         .onChange(of: selectedModel?.id) { oldID, _ in
             applyDefaults(previous: store.model(id: oldID))
         }
+        .task(id: selectedModel?.id) {
+            await preloadSelectedModel()
+        }
+    }
+
+    /// Loads the selected model shortly after it's picked, so Generate starts at once
+    /// instead of waiting 5–10 s (MLX) or minutes (a Core ML model's first compile).
+    private func preloadSelectedModel() async {
+        guard preloadModels, !app.automationRunning, let model = selectedModel else { return }
+        try? await Task.sleep(for: .seconds(1.5))  // don't load every model clicked past
+        guard !Task.isCancelled, !queue.isRunning, !generator.isBusy,
+              generator.loadedModelID != model.id else { return }
+        await generator.preload(model: model, request: app.request)
     }
 
     /// Distilled MLX models need very different steps/guidance (Z-Image Turbo: 9 steps,
@@ -254,12 +285,21 @@ struct GenerateView: View {
 
     // MARK: Output
 
+    /// The finished image being looked at: a queue job the user clicked, else the latest.
+    private var shownRecord: GenerationRecord? {
+        app.viewedRecord ?? generator.lastRecord
+    }
+
+    private var shownImage: CGImage? {
+        generator.preview ?? (app.viewedRecord != nil ? viewedImage : nil) ?? generator.lastImage
+    }
+
     private var output: some View {
         VStack(spacing: 12) {
             status
             ZStack {
                 RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.5))
-                if let image = generator.preview ?? generator.lastImage {
+                if let image = shownImage {
                     Image(decorative: image, scale: 1)
                         .resizable()
                         .interpolation(.high)
@@ -272,13 +312,19 @@ struct GenerateView: View {
                                            description: Text("Write a prompt and press ⌘↩."))
                 }
             }
-            if let record = generator.lastRecord, !generator.isBusy {
+            if let record = shownRecord, generator.preview == nil {
                 HStack {
                     Text("\(record.modelName) · seed \(record.request.seed) · \(record.seconds, specifier: "%.1f") s")
                         .foregroundStyle(.secondary)
                         .font(.callout)
+                        .lineLimit(1)
                     Spacer()
-                    Button("Copy") { copyLastImage() }
+                    if app.viewedRecord != nil {
+                        Button("Latest") { app.viewedRecord = nil }
+                            .help("Back to the most recent image")
+                    }
+                    Button("Use Settings") { app.restore(record) }
+                    Button("Copy") { copyShownImage() }
                     Button("Show in Finder") {
                         NSWorkspace.shared.activateFileViewerSelecting([ImageSaver.folder.appending(path: record.fileName)])
                     }
@@ -290,6 +336,12 @@ struct GenerateView: View {
             }
         }
         .padding()
+        .task(id: app.viewedRecord?.fileName) {
+            guard let record = app.viewedRecord else { viewedImage = nil; return }
+            let path = ImageSaver.folder.appending(path: record.fileName).path
+            viewedImage = await Task.detached { StartImages.load(path) }.value
+        }
+        .onChange(of: generator.lastRecord) { app.viewedRecord = nil }
     }
 
     @ViewBuilder
@@ -309,13 +361,19 @@ struct GenerateView: View {
             .progressViewStyle(.linear)
         case .generating(let step, let total):
             ProgressView(value: Double(step), total: Double(max(total, 1))) {
-                Text("Step \(step) of \(total)")
+                HStack {
+                    Text("Step \(step) of \(total)")
+                    if let eta = generator.etaSeconds, eta >= 1 {
+                        Text("· about \(Duration.seconds(eta.rounded()).formatted(.units(allowed: [.minutes, .seconds], width: .abbreviated))) left")
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
     }
 
-    private func copyLastImage() {
-        guard let image = generator.lastImage else { return }
+    private func copyShownImage() {
+        guard let image = (app.viewedRecord != nil ? viewedImage : nil) ?? generator.lastImage else { return }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.writeObjects([NSImage(cgImage: image, size: .zero)])

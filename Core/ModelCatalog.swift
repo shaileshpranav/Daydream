@@ -88,18 +88,33 @@ enum ModelCatalog {
 /// A model on disk. Stored as `model.json` in the model's folder.
 struct InstalledModel: Codable, Identifiable, Hashable {
     let id: String
-    let name: String
+    var name: String
     let kind: ModelKind
     var computeUnits: ComputeUnitsChoice
-    let resolution: Int
+    var resolution: Int
     /// LoRAs fused into the weights at conversion time (tools/convert --lora).
     var loras: [FusedLoRA]?
     var mlxFamily: String?
     var defaults: ModelDefaults?
+    /// Hugging Face repo it was downloaded from, if any.
+    var source: String?
     /// Not persisted; set when the folder is scanned.
     var folder: URL!
 
-    enum CodingKeys: String, CodingKey { case id, name, kind, computeUnits, resolution, loras, mlxFamily, defaults }
+    enum CodingKeys: String, CodingKey { case id, name, kind, computeUnits, resolution, loras, mlxFamily, defaults, source }
+
+    /// The catalog entry this model was installed from, for notes, license and built-in defaults.
+    var catalogEntry: CatalogEntry? { ModelCatalog.entries.first { $0.id == id } }
+
+    /// The defaults it shipped with, before any edits in the model manager.
+    var builtInDefaults: ModelDefaults? { catalogEntry?.defaults ?? MLXFamilies.family(id: mlxFamily)?.defaults }
+
+    var backendLabel: String {
+        switch kind {
+        case .mlx: "MLX · \(MLXFamilies.family(id: mlxFamily)?.label ?? mlxFamily ?? "unknown family")"
+        case .sd, .sdxl: "Core ML · \(kind.label)"
+        }
+    }
 
     /// The LoRA base this model accepts at generation time (MLX models only).
     var loraBase: LoRABase? { LoRABase.forMLXFamily(mlxFamily) }
