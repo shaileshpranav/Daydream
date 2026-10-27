@@ -10,6 +10,10 @@ import Foundation
 enum SmokeTest {
     static func runIfRequested(store: ModelStore, generator: Generator) {
         let defaults = UserDefaults.standard
+        if defaults.bool(forKey: "loraTest") {
+            Task { exit(await runLoRATest() ? 0 : 1) }
+            return
+        }
         if let idea = defaults.string(forKey: "enhanceTest") {
             Task { exit(await runEnhance(idea: idea) ? 0 : 1) }
             return
@@ -21,6 +25,49 @@ enum SmokeTest {
                                steps: defaults.integer(forKey: "steps"))
             exit(ok ? 0 : 1)
         }
+    }
+
+    /// `-loraTest YES` classifies the Loras folder, a Hugging Face LoRA (header only),
+    /// and synthetic metadata-free headers for the shape-based fallback.
+    private static func runLoRATest() async -> Bool {
+        for url in ModelStore.libraryLoRAs() {
+            print("[lora] folder \(url.lastPathComponent): \(LoRAInspector.inspect(file: url))")
+        }
+        do {
+            let (file, result) = try await LoRAInspector.inspect(repo: "renderartist/Technically-Color-Z-Image-Turbo")
+            print("[lora] repo renderartist/Technically-Color-Z-Image-Turbo (\(file)): \(result)")
+        } catch {
+            print("[lora] repo check failed: \(error.localizedDescription)")
+        }
+        func header(_ tensors: [String: [Int]]) -> Data {
+            try! JSONSerialization.data(withJSONObject: tensors.mapValues { ["dtype": "F16", "shape": $0, "data_offsets": [0, 0]] })
+        }
+        let cases: [(String, [String: [Int]], LoRAInspector.Result)] = [
+            ("klein4b", ["diffusion_model.double_blocks.0.img_attn.qkv.lora_A.weight": [16, 3072],
+                         "diffusion_model.double_blocks.0.img_mlp.0.lora_B.weight": [18432, 16]], .known(.flux2Klein4B)),
+            ("flux1", ["double_blocks.0.img_attn.qkv.lora_A.weight": [16, 3072],
+                       "double_blocks.0.img_mlp.0.lora_B.weight": [12288, 16]], .known(.flux1)),
+            ("klein9b", ["double_blocks.0.img_attn.qkv.lora_A.weight": [16, 4096]], .known(.flux2Klein9B)),
+            ("zimage", ["diffusion_model.layers.0.attention.to_q.lora_A.weight": [16, 3840]], .known(.zImage)),
+            ("sdxl", ["lora_unet_down_blocks_0.lora_down.weight": [8, 320], "lora_te2_text_model.lora_down.weight": [8, 1280]], .known(.sdxl)),
+            ("sd15", ["lora_unet_down_blocks_0.lora_down.weight": [8, 320]], .known(.sd15)),
+            ("qwen-no-metadata", ["transformer_blocks.0.attn.to_q.lora_A.weight": [16, 3072]], .unknown("")),
+        ]
+        var ok = true
+        for (name, tensors, expected) in cases {
+            let got = LoRAInspector.classify(header: header(tensors))
+            let pass = switch (got, expected) {
+            case (.unknown, .unknown): true
+            default: got == expected
+            }
+            ok = ok && pass
+            print("[lora] synthetic \(name): \(got) \(pass ? "✓" : "✗ expected \(expected)")")
+        }
+        for value in ["flux2_klein_4b", "sdxl_base_v1-0", "stable-diffusion-xl-v1-base/lora", "flux-1-dev/lora",
+                      "z_image_turbo", "qwen_image_2_1", "qwen-image", "sd_v1"] {
+            print("[lora] metadata \"\(value)\" -> \(LoRABase(metadata: value).map(\.label) ?? "nil")")
+        }
+        return ok
     }
 
     /// `-enhanceTest "a fox in snow"` prints the enhancer's output for an SD 1.x and an SDXL model.

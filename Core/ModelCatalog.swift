@@ -100,6 +100,14 @@ struct InstalledModel: Codable, Identifiable, Hashable {
     var folder: URL!
 
     enum CodingKeys: String, CodingKey { case id, name, kind, computeUnits, resolution, loras, mlxFamily, defaults }
+
+    /// The LoRA base this model accepts at generation time (MLX models only).
+    var loraBase: LoRABase? { LoRABase.forMLXFamily(mlxFamily) }
+
+    /// Steps and guidance this model is tuned for; SD defaults for Core ML models.
+    var recommended: ModelDefaults {
+        defaults ?? ModelDefaults(steps: kind == .sdxl ? 30 : 25, guidance: 7.5)
+    }
 }
 
 struct FusedLoRA: Codable, Hashable {

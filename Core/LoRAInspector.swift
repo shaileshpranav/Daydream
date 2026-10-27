@@ -1,0 +1,168 @@
+import Foundation
+
+/// The base model a LoRA was trained for. A LoRA only works on its own base: the
+/// layer names and sizes must match the model's weights.
+enum LoRABase: String, Codable, CaseIterable {
+    case sd15, sdxl, flux1, flux2Klein4B, flux2Klein9B, zImage, qwenImage, qwenImage21
+
+    var label: String {
+        switch self {
+        case .sd15: "SD 1.5"
+        case .sdxl: "SDXL"
+        case .flux1: "FLUX.1"
+        case .flux2Klein4B: "FLUX.2 Klein 4B"
+        case .flux2Klein9B: "FLUX.2 Klein 9B"
+        case .zImage: "Z-Image"
+        case .qwenImage: "Qwen-Image"
+        case .qwenImage21: "Qwen-Image 2.1"
+        }
+    }
+
+    /// The LoRA base an MLX model family accepts (Turbo and Base variants share LoRAs).
+    static func forMLXFamily(_ family: String?) -> LoRABase? {
+        switch family {
+        case "z-image-turbo", "z-image": .zImage
+        case "flux2-klein-4b": .flux2Klein4B
+        case "flux2-klein-9b": .flux2Klein9B
+        case "qwen-image-2.1-turbo", "qwen-image-2.1": .qwenImage21
+        default: nil
+        }
+    }
+
+    /// Parses the base-model strings training tools write, e.g. kohya/ai-toolkit's
+    /// `ss_base_model_version` ("flux2_klein_4b", "sdxl_base_v1-0") or
+    /// `modelspec.architecture` ("stable-diffusion-xl-v1-base/lora").
+    init?(metadata value: String) {
+        let s = value.lowercased().filter { $0.isLetter || $0.isNumber }
+        if s.contains("flux2") || s.contains("fluxdot2") {
+            if s.contains("9b") { self = .flux2Klein9B; return }
+            if s.contains("4b") || s.contains("klein") { self = .flux2Klein4B; return }
+            return nil
+        }
+        if s.contains("zimage") { self = .zImage; return }
+        if s.contains("qwen") {
+            self = s.contains("21") ? .qwenImage21 : .qwenImage
+            return
+        }
+        if s.contains("flux") { self = .flux1; return }
+        if s.contains("sdxl") || s.contains("stablediffusionxl") { self = .sdxl; return }
+        if s.contains("sdv1") || s.contains("sd15") || s.contains("stablediffusionv1") { self = .sd15; return }
+        return nil
+    }
+}
+
+enum LoRAInspector {
+    enum Result: Equatable {
+        case known(LoRABase)
+        case unknown(String)
+    }
+
+    private static let cache = NSCache<NSString, Box>()
+    private final class Box { let result: Result; init(_ r: Result) { result = r } }
+
+    /// Detects the base model of a local .safetensors file from its header only.
+    static func inspect(file url: URL) -> Result {
+        let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        let key = "\(url.path)|\(mtime?.timeIntervalSince1970 ?? 0)" as NSString
+        if let hit = cache.object(forKey: key) { return hit.result }
+        let result: Result
+        do {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            guard let lengthData = try handle.read(upToCount: 8), lengthData.count == 8 else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            let length = Int(lengthData.withUnsafeBytes { $0.loadUnaligned(as: UInt64.self).littleEndian })
+            guard length > 0, length < 100_000_000, let header = try handle.read(upToCount: length) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            result = classify(header: header)
+        } catch {
+            result = .unknown("Couldn't read the file's header")
+        }
+        cache.setObject(Box(result), forKey: key)
+        return result
+    }
+
+    /// Detects the base model of a LoRA in a Hugging Face repo by fetching only its
+    /// .safetensors header with HTTP range requests (a few KB, not the whole file).
+    static func inspect(repo: String) async throws -> (file: String, result: Result) {
+        let files = try await HuggingFace.listFiles(repo: repo, prefix: "")
+            .filter { $0.path.hasSuffix(".safetensors") }
+        guard let file = files.min(by: { $0.size < $1.size }) else {
+            throw RuntimeError("\(repo) has no .safetensors file.")
+        }
+        let url = HuggingFace.resolveURL(repo: repo, path: file.path)
+        let lengthData = try await fetch(url, range: 0...7)
+        guard lengthData.count == 8 else { throw RuntimeError("Couldn't read \(file.path)'s header.") }
+        let length = Int(lengthData.withUnsafeBytes { $0.loadUnaligned(as: UInt64.self).littleEndian })
+        guard length > 0, length < 100_000_000 else { throw RuntimeError("\(file.path) isn't a valid .safetensors file.") }
+        let header = try await fetch(url, range: 8...(8 + length - 1))
+        return (file.path, classify(header: header))
+    }
+
+    private static func fetch(_ url: URL, range: ClosedRange<Int>) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.setValue("bytes=\(range.lowerBound)-\(range.upperBound)", forHTTPHeaderField: "Range")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, ![200, 206].contains(http.statusCode) {
+            throw RuntimeError("Hugging Face returned HTTP \(http.statusCode) for \(url.lastPathComponent).")
+        }
+        return data.prefix(range.count)
+    }
+
+    // MARK: Classification
+
+    static func classify(header: Data) -> Result {
+        guard let json = try? JSONSerialization.jsonObject(with: header) as? [String: Any] else {
+            return .unknown("Not a valid .safetensors header")
+        }
+        if let metadata = json["__metadata__"] as? [String: String] {
+            for key in ["ss_base_model_version", "modelspec.architecture", "base_model", "ss_sd_model_name"] {
+                if let value = metadata[key], let base = LoRABase(metadata: value) { return .known(base) }
+            }
+        }
+        var shapes: [String: [Int]] = [:]
+        for (key, value) in json where key != "__metadata__" {
+            if let info = value as? [String: Any], let shape = info["shape"] as? [Int] { shapes[key] = shape }
+        }
+        if let base = classify(shapes: shapes) { return .known(base) }
+        return .unknown("No base model in its metadata, and its layers don't match a supported model")
+    }
+
+    /// Structural fallback for LoRAs without metadata. Only patterns that identify a
+    /// model unambiguously; anything else stays unknown.
+    private static func classify(shapes: [String: [Int]]) -> LoRABase? {
+        let keys = shapes.keys
+        /// Input width of the LoRA's down/A matrices whose key contains `fragment`.
+        func inputWidth(_ fragment: String) -> Int? {
+            keys.first { $0.contains(fragment) && ($0.contains("lora_A") || $0.contains("lora_down")) }
+                .flatMap { shapes[$0]?.last }
+        }
+        func outputWidth(_ fragment: String) -> Int? {
+            keys.first { $0.contains(fragment) && ($0.contains("lora_B") || $0.contains("lora_up")) }
+                .flatMap { shapes[$0]?.first }
+        }
+
+        // Z-Image: `layers.N.attention.*` (plus noise/context refiners), hidden size 3840.
+        if keys.contains(where: { $0.contains("noise_refiner") || $0.contains("context_refiner") })
+            || (keys.contains(where: { $0.contains("layers.") && $0.contains(".attention.") }) && inputWidth(".attention.") == 3840) {
+            return .zImage
+        }
+        // FLUX (BFL layout): double_blocks. FLUX.2 Klein 4B is 3072 wide with an 18432
+        // MLP; Klein 9B is 4096 wide; FLUX.1 is 3072 wide with a 12288 MLP.
+        if keys.contains(where: { $0.contains("double_blocks") }) {
+            switch (inputWidth("double_blocks"), outputWidth("img_mlp.0")) {
+            case (4096, _): return .flux2Klein9B
+            case (3072, 18432): return .flux2Klein4B
+            case (3072, 12288): return .flux1
+            default: return nil
+            }
+        }
+        // SD/SDXL (kohya layout): UNet keys. SDXL has a second text encoder (te2/text_encoder_2).
+        if keys.contains(where: { $0.hasPrefix("lora_unet_") }) {
+            return keys.contains(where: { $0.hasPrefix("lora_te2_") }) ? .sdxl : .sd15
+        }
+        return nil
+    }
+}

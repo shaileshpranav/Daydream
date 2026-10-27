@@ -37,6 +37,8 @@ enum AspectChoice: String, Codable, CaseIterable, Identifiable {
 struct LoRARef: Codable, Hashable, Identifiable {
     var source: String
     var scale: Double = 1.0
+    /// Detected when the LoRA was added; used to drop it when switching to another base model.
+    var base: LoRABase?
 
     var id: String { source }
     var name: String { URL(fileURLWithPath: source).deletingPathExtension().lastPathComponent }

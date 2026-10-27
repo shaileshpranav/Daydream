@@ -75,14 +75,17 @@ struct GenerateView: View {
                 enhanceRow
             }
 
-            if selectedModel?.kind == .mlx {
-                MLXLoRASection(loras: Binding(
+            if let selectedModel, selectedModel.kind == .mlx {
+                MLXLoRASection(model: selectedModel, loras: Binding(
                     get: { app.request.loras ?? [] },
                     set: { app.request.loras = $0 }
                 ))
             }
 
             Section("Settings") {
+                if let selectedModel {
+                    recommendedRow(for: selectedModel)
+                }
                 Stepper("Steps: \(app.request.steps)", value: $app.request.steps, in: 1...100)
                 VStack(alignment: .leading) {
                     Text("Guidance: \(app.request.guidance, specifier: "%.1f")")
@@ -136,12 +139,39 @@ struct GenerateView: View {
             return
         }
         guard let model = selectedModel else { return }
-        if let defaults = model.defaults {
-            app.request.steps = defaults.steps
-            app.request.guidance = defaults.guidance
-        } else if previous?.defaults != nil {
-            app.request.steps = 25
-            app.request.guidance = 7.5
+        if model.defaults != nil || previous?.defaults != nil {
+            applyRecommended(for: model)
+        }
+    }
+
+    private func isRecommended(for model: InstalledModel) -> Bool {
+        let r = model.recommended
+        return app.request.steps == r.steps && app.request.guidance == r.guidance
+            && (model.kind == .mlx || app.request.scheduler == .dpmSolver)
+    }
+
+    private func applyRecommended(for model: InstalledModel) {
+        let r = model.recommended
+        app.request.steps = r.steps
+        app.request.guidance = r.guidance
+        if model.kind != .mlx { app.request.scheduler = .dpmSolver }
+    }
+
+    private func recommendedRow(for model: InstalledModel) -> some View {
+        let r = model.recommended
+        let summary = "\(r.steps) steps · guidance \(r.guidance.formatted(.number.precision(.fractionLength(1))))"
+            + (model.kind == .mlx ? "" : " · DPM-Solver++")
+        return HStack {
+            Text("Recommended: \(summary)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            if isRecommended(for: model) {
+                Label("In use", systemImage: "checkmark").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Button("Use Recommended") { applyRecommended(for: model) }
+                    .help("Set steps, guidance\(model.kind == .mlx ? "" : " and scheduler") to what \(model.name) is tuned for")
+            }
         }
     }
 
