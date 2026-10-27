@@ -83,19 +83,42 @@ final class MLXBackend: ImageBackend {
             "width": size.width,
             "height": size.height,
             "out": out.path,
+            "preview_every": Self.previewInterval(setting: previewEvery, steps: request.steps),
         ]) { a, _ in a })
 
         var cancelSent = false
+        var lastStep = (0, request.steps)
+        func reportStep(_ step: Int, _ total: Int, _ preview: CGImage?) {
+            if !onStep(step, total, preview), !cancelSent, let pid = process?.processIdentifier {
+                kill(pid, SIGUSR1)  // the worker stops at its next step
+                cancelSent = true
+            }
+        }
         while true {
             let event = try nextEvent()
             switch event["event"] as? String {
             case "step":
                 let step = event["step"] as? Int ?? 0
                 let total = event["total"] as? Int ?? request.steps
-                if !onStep(step, total, nil), !cancelSent, let pid = process?.processIdentifier {
-                    kill(pid, SIGUSR1)  // the worker stops at its next step
-                    cancelSent = true
-                }
+                lastStep = (step, total)
+                reportStep(step, total, nil)
+            case "preview":
+                guard let path = event["path"] as? String else { continue }
+                let url = URL(filePath: path)
+                let options = [kCGImageSourceShouldCacheImmediately: true] as CFDictionary
+                let preview = CGImageSourceCreateWithURL(url as CFURL, nil)
+                    .flatMap { CGImageSourceCreateImageAtIndex($0, 0, options) }
+                try? FileManager.default.removeItem(at: url)
+                #if DEBUG
+                print("[mlx] preview at step \(event["step"] ?? "?"): \(String(format: "%.2f", event["seconds"] as? Double ?? 0)) s")
+                #endif
+                if let preview { reportStep(lastStep.0, lastStep.1, preview) }
+            case "encoded":
+                #if DEBUG
+                let cached = event["cached"] as? Bool ?? false
+                print("[mlx] prompt encoding: \(cached ? "reused" : String(format: "%.2f s", event["seconds"] as? Double ?? 0))")
+                #endif
+                continue
             case "done":
                 // Decode now: CGImageSource is lazy, and `out` is deleted when we return.
                 let options = [kCGImageSourceShouldCacheImmediately: true] as CFDictionary
@@ -111,6 +134,13 @@ final class MLXBackend: ImageBackend {
                 continue
             }
         }
+    }
+
+    /// MLX models run few, slow steps (4–9 at 15–20 s each), so "every 5 steps" would rarely
+    /// show anything. Aim for about three previews per image, never sparser than the setting.
+    static func previewInterval(setting: Int, steps: Int) -> Int {
+        guard setting > 0 else { return 0 }
+        return max(1, min(setting, steps / 3))
     }
 
     func unload() {

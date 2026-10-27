@@ -5,10 +5,40 @@ struct GalleryView: View {
     @Environment(Generator.self) private var generator
     @Environment(ModelStore.self) private var store
     @State private var records: [GenerationRecord] = []
+    /// The image open in the full-size viewer, as an index into `records`.
+    @State private var viewing: Int?
 
     private let columns = [GridItem(.adaptive(minimum: 180), spacing: 12)]
 
     var body: some View {
+        Group {
+            if viewing != nil {
+                ImageViewer(records: records, index: $viewing, onTrash: trashFromViewer)
+            } else {
+                grid
+            }
+        }
+        .navigationTitle("Gallery")
+        .onAppear(perform: reload)
+        .onChange(of: generator.lastRecord) {
+            // A new image: add it at the top rather than rescanning the whole folder,
+            // keeping the viewer on the image it's showing.
+            if let record = generator.lastRecord, !records.contains(record) {
+                records.insert(record, at: 0)
+                if let viewing { self.viewing = viewing + 1 }
+            }
+        }
+    }
+
+    private func trashFromViewer(_ record: GenerationRecord) {
+        guard let index = records.firstIndex(of: record) else { return }
+        ImageSaver.delete(record)
+        records.remove(at: index)
+        viewing = records.isEmpty ? nil : min(index, records.count - 1)
+    }
+
+    @ViewBuilder
+    private var grid: some View {
         Group {
             if records.isEmpty {
                 ContentUnavailableView("No images yet", systemImage: "photo.on.rectangle",
@@ -16,10 +46,11 @@ struct GalleryView: View {
             } else {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 12) {
-                        ForEach(records) { record in
+                        ForEach(Array(records.enumerated()), id: \.element.id) { index, record in
                             GalleryCell(record: record)
-                                .onTapGesture { app.restore(record) }
+                                .onTapGesture { viewing = index }
                                 .contextMenu {
+                                    Button("View") { viewing = index }
                                     Button("Use these settings") { app.restore(record) }
                                     Button("Use as Start Image") {
                                         app.useAsStartImage(ImageSaver.folder.appending(path: record.fileName),
@@ -40,16 +71,10 @@ struct GalleryView: View {
                 }
             }
         }
-        .navigationTitle("Gallery")
         .toolbar {
             Button("Open Folder", systemImage: "folder") {
                 NSWorkspace.shared.open(ImageSaver.folder)
             }
-        }
-        .onAppear(perform: reload)
-        .onChange(of: generator.lastRecord) {
-            // A new image: add it at the top rather than rescanning the whole folder.
-            if let record = generator.lastRecord, !records.contains(record) { records.insert(record, at: 0) }
         }
     }
 
@@ -80,7 +105,7 @@ private struct GalleryCell: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
-        .help("Click to reuse this prompt and settings")
+        .help("Click to view full size; right-click for more")
         .task(id: record.fileName) {
             let record = record
             thumbnail = await Task.detached { ImageSaver.thumbnail(for: record) }.value

@@ -10,6 +10,8 @@ struct CoreMLImageGenApp: App {
     @State private var loraLibrary = LoRALibrary()
 
     init() {
+        // Defaults for settings the backends read directly (not just through @AppStorage).
+        UserDefaults.standard.register(defaults: [StableDiffusionBackend.lowPrecisionKey: true])
         let generator = Generator()
         _generator = State(initialValue: generator)
         _queue = State(initialValue: GenerationQueue(generator: generator))
@@ -72,7 +74,8 @@ final class AppState {
     var viewedRecord: GenerationRecord?
 
     /// True while a debug smoke test drives the app, so it doesn't preload models itself.
-    var automationRunning = ["smokeTest", "queueTest", "img2imgTest", "loraTest", "enhanceTest", "preloadTest"]
+    var automationRunning = ["smokeTest", "queueTest", "img2imgTest", "loraTest", "enhanceTest", "preloadTest",
+                             "precisionTest", "managerTest", "previewTest"]
         .contains { UserDefaults.standard.object(forKey: $0) != nil }
 
     var startImageError: String?

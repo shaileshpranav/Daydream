@@ -6,7 +6,11 @@ A native SwiftUI Mac app that runs text-to-image models locally. It is tuned for
 - **Queue**: ⌘↩ adds the current settings as a job; it says **Add to Queue** while something is running. **Images: N** queues a batch with consecutive seeds (42, 43, 44…), so any one can be reproduced. The queue list under the image shows each job's progress and lets you reorder or remove waiting jobs, cancel the running one, cancel everything, clear finished jobs, and reuse a finished job's settings. Jobs run one at a time on the single resident model; consecutive jobs on the same model reuse it without reloading. Each job captures its settings when queued, so editing the prompt doesn't change jobs already waiting.
 - **Image-to-image**: in the **Start Image** section, drop an image or choose one, or pick **Use as Start Image** from a gallery image's menu or a finished queue job. **Change** (0.05–1) sets how much to redraw: low keeps the composition and details, high mostly follows the prompt. It works on every model. Core ML models scale and centre-crop the start image to their fixed size; MLX models switch to the aspect closest to the image. The start image is copied into `Application Support/CoreMLImageGen/StartImages`, so queued jobs and saved settings keep working if the original moves.
 - **Prompt enhancer** (⌘E): turns a short idea into a detailed prompt and negative prompt using Apple Intelligence, on device. See [Prompt enhancer](#prompt-enhancer).
-- **Gallery**: every image in `~/Pictures/CoreMLImageGen`. Click one to restore its prompt and settings.
+- **Gallery**: every image in `~/Pictures/CoreMLImageGen`. Click one to open it full size:
+  - Fit or actual size: double-click, pinch, or ⌘0, ⌘1, ⌘+ and ⌘−.
+  - **←** and **→** move through the gallery, and **Esc** goes back.
+  - A side panel shows how it was made: prompt, model, seed, steps, guidance, size, LoRAs, start image and time.
+  - Actions: Use These Settings, Use as Start Image, Copy Image (⌘C), Copy Prompt, Show in Finder, and Move to Trash (⌘⌫).
 - **Model manager**: models, LoRAs and installing new ones. See [Model manager](#model-manager).
 - **Fast start:** the selected model loads in the background 1.5 s after you pick it, so Generate starts at once. Turn this off in Settings to keep memory free until you generate.
 - **Seeds:** **New random seed each time** is on by default; the seed field shows the one used, so you can turn the toggle off and keep it to make variations.
@@ -53,6 +57,7 @@ The **first load** of a model compiles it for this Mac's Neural Engine or GPU, w
 | Model | Steps | First load (compiles for the Neural Engine, once) | Per image | Notes |
 |---|---|---|---|---|
 | SD 1.5, 6-bit palettized | 25, DPM-Solver++ | ~4.6 min | **16 s** | Same seed gives identical pixels. App footprint ~185 MB (Neural Engine memory is counted separately) |
+| SDXL base, 4.5-bit (GPU) | 20, DPM-Solver++ | ~7 min the first time | **154 s** (7.7 s/step) | With **Faster GPU maths** (16-bit accumulation, on by default): 13% faster than 32-bit (174 s, 8.7 s/step). Same seed: PSNR 35 dB; side by side the images match, with only fine wrinkle-texture differences at 100% zoom. Turn it off in Settings if you need exact 32-bit output |
 | Z-Image Turbo, 4-bit (MLX) | 9 | ~11 s | **170 s** at 1024×1024 | About 18 s per step |
 | FLUX.2 Klein 4B, 4-bit (MLX) | 4 | ~6 s (no compile step) | **82 s** at 1024×1024 | About 16 s per step plus text encoding and decode. Same seed gives identical pixels. Smaller aspect sizes are proportionally faster |
 
@@ -133,7 +138,8 @@ Newer diffusion transformers have no practical Core ML conversion that fits 16 G
 - **Use Recommended** (Settings section): resets steps, guidance and (for Core ML) the scheduler to what the selected model is tuned for. It shows "In use" when they already match.
 - **Model defaults:** picking a model sets its steps and guidance (FLUX.2 Klein: 4 steps; Z-Image Turbo: 9 steps, guidance 0; Qwen-Image 2.1 Turbo: 8). FLUX.2 Klein takes no negative prompt, so that field hides.
 - **LoRAs without conversion:** put `.safetensors` files in `~/Library/Application Support/CoreMLImageGen/Models/Loras` (subfolders are fine). They're listed under **Add from Loras Folder** in the Generate screen's LoRA section, which also has **Rescan Folder** and **Show Loras Folder in Finder**. You can also add any file or a Hugging Face repo, then set its strength with a slider. LoRAs load with the model: changing them reloads the weights on the next generate, which takes seconds to a minute rather than an hour of conversion. The LoRA must match the model family.
-- **No live preview** for MLX models; you see step progress.
+- **Live preview:** about three previews per image (Settings → Live preview). Each shows the model's current guess at the finished image: x₀ = xₜ − σₜ·v, from the scheduler's step inputs. That's much clearer than the noisy in-between latents. Previews decode at half size, at 1.1–1.4 s each on FLUX.2 Klein (6% of the image time) and 0.3–0.6 s on Z-Image at 512 px (3%). With previews on, the final image is pixel-identical to the one without. Qwen-Image 2.1's preview path hasn't been run yet.
+- **Batches reuse the prompt encoding:** Z-Image and FLUX.2 run a 4B text encoder for every image, about 2 s each on this M1 Pro. The worker keeps the last four encodings, so a batch with the same prompt encodes it once. Qwen-Image 2.1 already caches its own.
 - **Image-to-image memory:** start images are encoded in 512 px tiles. Encoding a 1024 px image in one pass added ~5.7 GB (FLUX.2 Klein 4B peaked at 10.3 GB, against 6.9 GB tiled), which made a 16 GB Mac swap so hard that one image took 16 minutes. Tiled, it takes 43–69 s.
 
 **Adding another mflux model:** for a supported family, use **Add Models → From Hugging Face**. To support a new family, add it to `make_model()` in `mlx_worker.py` and to `MLXFamilies.all` in `Core/MLXFamilies.swift` (with its defaults and repo-name detection); optionally add a catalog entry to `Core/catalog.json`. The repos at [huggingface.co/mflux-community](https://huggingface.co/mflux-community) are the pre-quantized weights.

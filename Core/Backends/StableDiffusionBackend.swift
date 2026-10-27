@@ -13,9 +13,29 @@ final class StableDiffusionBackend: ImageBackend {
 
     private var isXL: Bool { model.kind == .sdxl }
 
+    /// UserDefaults key for "Faster GPU maths" in Settings.
+    static let lowPrecisionKey = "lowPrecisionGPU"
+
+    /// Whether the GPU may accumulate in 16-bit instead of 32-bit. Only matters when the
+    /// model runs on the GPU (CPU + GPU, or All); the Neural Engine is 16-bit anyway.
+    private var wantsLowPrecision: Bool {
+        model.computeUnits != .cpuAndNeuralEngine && UserDefaults.standard.bool(forKey: Self.lowPrecisionKey)
+    }
+    private var loadedLowPrecision: Bool?
+
+    /// Changing the setting needs a reload: it's part of the model configuration.
+    func needsReload(for request: GenerationRequest) -> Bool {
+        pipeline != nil && loadedLowPrecision != wantsLowPrecision
+    }
+
     func load() throws {
+        pipeline?.unloadResources()
+        pipeline = nil
         let config = MLModelConfiguration()
         config.computeUnits = model.computeUnits.mlValue
+        let lowPrecision = wantsLowPrecision
+        config.allowLowPrecisionAccumulationOnGPU = lowPrecision
+        loadedLowPrecision = lowPrecision
         let pipeline: StableDiffusionPipelineProtocol
         if isXL {
             // On 16 GB, SDXL only fits if the text encoders and VAE are loaded on demand.

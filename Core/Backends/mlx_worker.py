@@ -72,16 +72,147 @@ def make_model(family, path, loras, float16):
     raise ValueError(f"Unknown model family: {family}")
 
 
-class Progress:
-    def __init__(self):
-        self.total = 0
+# --- Live preview -----------------------------------------------------------------------
+#
+# The per-step callback only sees the noisy latents, which look like static early on. These
+# models are rectified-flow (x_t = (1 - s) x0 + s * noise, the network predicts v), and both
+# mflux schedulers step as x_next = x_t + v * (s_next - s_t). So remembering each step's
+# inputs gives the model's current guess at the finished image: x0 = x_t - s_t * v.
 
+_step_inputs = {}
+
+
+def _record_scheduler_steps():
+    from mflux.models.common.schedulers.flow_match_euler_discrete_scheduler import FlowMatchEulerDiscreteScheduler
+    from mflux.models.common.schedulers.linear_scheduler import LinearScheduler
+
+    for cls in (FlowMatchEulerDiscreteScheduler, LinearScheduler):
+        if getattr(cls.step, "_records_inputs", False):
+            continue
+        original = cls.step
+
+        def step(self, noise, timestep, latents, _original=original, **kwargs):
+            sigmas = kwargs.get("sigmas", self.sigmas)
+            _step_inputs["value"] = (latents, noise, sigmas[timestep])
+            return _original(self, noise, timestep, latents, **kwargs)
+
+        step._records_inputs = True
+        cls.step = step
+
+
+def _latent_creator(family):
+    if family.startswith("z-image"):
+        from mflux.models.z_image.latent_creator.z_image_latent_creator import ZImageLatentCreator
+        return ZImageLatentCreator
+    if family.startswith("flux2-klein"):
+        from mflux.models.flux2.latent_creator.flux2_latent_creator import Flux2LatentCreator
+        return Flux2LatentCreator
+    from mflux.models.qwen21.latent_creator.qwen21_latent_creator import Qwen21LatentCreator
+    return Qwen21LatentCreator
+
+
+def _half_size(latents):
+    """2x2 average-pool a [B, C, (F,) H, W] latent, so the VAE decodes a quarter of the
+    pixels. Full-size decodes cost ~7 s per preview on an M1 Pro (38% of a FLUX.2 image)."""
+    import mlx.core as mx
+
+    frame = latents.ndim == 5
+    if frame:
+        latents = latents[:, :, 0]
+    b, c, h, w = latents.shape
+    h2, w2 = h // 2 * 2, w // 2 * 2
+    pooled = latents[:, :, :h2, :w2].reshape(b, c, h2 // 2, 2, w2 // 2, 2).mean(axis=(3, 5))
+    return mx.expand_dims(pooled, 2) if frame else pooled
+
+
+def save_preview(model, family, latents, config, seed, prompt, path):
+    """Decodes the predicted finished image at half size (same unpack/decode path as
+    mflux's own StepwiseHandler) and saves a small PNG."""
+    from mflux.models.common.vae.vae_util import VAEUtil
+    from mflux.utils.image_util import ImageUtil
+
+    inputs = _step_inputs.get("value")
+    if inputs is not None:
+        before, velocity, sigma = inputs
+        x0 = before - velocity.astype(before.dtype) * sigma.astype(before.dtype)
+    else:
+        x0 = latents
+    unpacked = _latent_creator(family).unpack_latents(latents=x0, height=config.height, width=config.width)
+    vae = model.vae
+    if hasattr(vae, "unpack_packed_latents") and unpacked.shape[1] > getattr(vae, "latent_channels", 32):
+        # FLUX.2: de-normalize and unpatchify to the plain 32-channel latent first.
+        decoded = VAEUtil.decode(vae=vae, latent=_half_size(vae.unpack_packed_latents(unpacked)))
+    else:
+        decoded = vae.decode(_half_size(unpacked))
+    image = ImageUtil.to_image(
+        decoded_latents=decoded, config=config, seed=seed, prompt=prompt,
+        quantization=model.bits, lora_paths=None, lora_scales=None, generation_time=0,
+    ).image
+    image.thumbnail((640, 640))
+    image.save(path)
+
+
+_preview = {"every": 0, "dir": None, "family": None, "model": None, "count": 0}
+
+
+class Progress:
     def call_in_loop(self, t, seed, prompt, latents, config, time_steps):
         from mflux.utils.exceptions import StopImageGenerationException
 
-        emit("step", step=t + 1, total=config.num_inference_steps)
+        step, total = t + 1, config.num_inference_steps
+        emit("step", step=step, total=total)
         if _cancel:
             raise StopImageGenerationException("cancelled")
+        every = _preview["every"]
+        # No preview on the last step: the finished image follows straight away.
+        if every and step % every == 0 and step < total:
+            import mlx.core as mx
+
+            mx.eval(latents)  # finish this step's own work first, so `seconds` is the preview alone
+            start = time.time()
+            _preview["count"] += 1
+            path = os.path.join(_preview["dir"], f"preview-{os.getpid()}-{_preview['count']}.png")
+            try:
+                save_preview(_preview["model"], _preview["family"], latents, config, seed, prompt, path)
+                emit("preview", path=path, step=step, seconds=time.time() - start)
+            except Exception:  # a preview must never break the generation
+                traceback.print_exc()
+
+
+# --- Prompt encoding reuse ------------------------------------------------------------------
+#
+# Z-Image and FLUX.2 run their text encoder (a 4B LLM) for every image, even when a batch
+# repeats the same prompt. Qwen-Image 2.1 already keeps its own prompt_cache.
+
+def cache_prompt_encoding(model, family):
+    import mlx.core as mx
+    from collections import OrderedDict
+
+    if family.startswith("z-image"):
+        name = "_encode_prompts"
+    elif family.startswith("flux2-klein"):
+        name = "_encode_prompt_pair"
+    else:
+        return
+    original = getattr(model, name)
+    cache = OrderedDict()
+
+    def cached(**kwargs):
+        key = json.dumps(kwargs, sort_keys=True, default=str)
+        if key in cache:
+            cache.move_to_end(key)
+            emit("encoded", cached=True, seconds=0.0)
+            return cache[key]
+        start = time.time()
+        result = original(**kwargs)
+        mx.eval([part for part in result if part is not None])  # store results, not lazy graphs
+        cache[key] = result
+        if len(cache) > 4:
+            cache.popitem(last=False)
+        emit("encoded", cached=False, seconds=time.time() - start)
+        return result
+
+    setattr(model, name, cached)
 
 
 def generate(model, family, req):
@@ -130,11 +261,16 @@ def main():
                 model.tiling_config = TilingConfig(vae_decode_tiles_per_dim=None)
                 # Registered once per loaded model; mflux has no unregister.
                 model.callbacks.register(Progress())
+                cache_prompt_encoding(model, family)
+                _record_scheduler_steps()
                 emit("loaded", seconds=time.time() - start)
             elif req["op"] == "generate":
                 if model is None:
                     raise RuntimeError("No model loaded")
                 _cancel = False
+                _step_inputs.clear()
+                _preview.update(every=int(req.get("preview_every", 0)), family=family, model=model,
+                                dir=os.path.dirname(req["out"]))
                 image = generate(model, family, req)
                 image.image.save(req["out"])
                 gc.collect()

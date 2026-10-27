@@ -1,6 +1,11 @@
 #if DEBUG
 import CoreGraphics
 import Foundation
+import ImageIO
+
+private extension Int {
+    var nonZero: Int? { self == 0 ? nil : self }
+}
 
 /// Headless end-to-end check of download + load + generate, for Debug builds:
 ///
@@ -11,6 +16,14 @@ import Foundation
 enum SmokeTest {
     static func runIfRequested(store: ModelStore, generator: Generator, queue: GenerationQueue) {
         let defaults = UserDefaults.standard
+        if let id = defaults.string(forKey: "previewTest") {
+            Task { exit(await runPreviewTest(id: id, out: defaults.string(forKey: "out"), store: store, generator: generator) ? 0 : 1) }
+            return
+        }
+        if let id = defaults.string(forKey: "precisionTest") {
+            Task { exit(await runPrecisionTest(id: id, store: store, generator: generator) ? 0 : 1) }
+            return
+        }
         if let id = defaults.string(forKey: "preloadTest") {
             Task { exit(await runPreloadTest(id: id, store: store, generator: generator) ? 0 : 1) }
             return
@@ -42,6 +55,136 @@ enum SmokeTest {
                                steps: defaults.integer(forKey: "steps"))
             exit(ok ? 0 : 1)
         }
+    }
+
+    /// `-previewTest <mlx model id> [-out dir]`: three images with one prompt.
+    /// 1 (previews off, seed 21) encodes the prompt; 2 (off, seed 22) should reuse it;
+    /// 3 (previews on, seed 22) measures preview cost, must match 2 pixel for pixel, and
+    /// saves its previews to `out`.
+    private static func runPreviewTest(id: String, out: String?, store: ModelStore, generator: Generator) async -> Bool {
+        func log(_ s: String) { print("[preview] \(s)"); fflush(stdout) }
+        guard var model = store.model(id: id) else { log("\(id) isn't installed"); return false }
+        let base = UserDefaults.standard.integer(forKey: "base")
+        if base > 0 { model.resolution = base }  // -base 512 for a quicker check
+        var request = GenerationRequest(prompt: "a lighthouse on a rocky coast at sunset, waves crashing, dramatic clouds")
+        request.steps = model.recommended.steps
+        request.guidance = model.recommended.guidance
+
+        var results: [(seconds: Double, image: CGImage)] = []
+        var previews: [CGImage] = []
+        for (seed, previewEvery) in [(UInt32(21), 0), (22, 0), (22, 5)] {
+            request.seed = seed
+            let watcher = Task { @MainActor in
+                var last: CGImage?
+                while !Task.isCancelled {
+                    if let p = generator.preview, p !== last { previews.append(p); last = p }
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+            }
+            let outcome = await generator.generate(model: model, request: request, previewEvery: previewEvery)
+            watcher.cancel()
+            guard case .saved(let record) = outcome, let image = generator.lastImage else { log("\(outcome)"); return false }
+            results.append((record.seconds, image))
+            log("seed \(seed), previews \(previewEvery > 0 ? "on" : "off"): \(String(format: "%.1f", record.seconds)) s")
+        }
+        generator.unloadModel()
+
+        let saved = results[0].seconds - results[1].seconds
+        let overhead = results[2].seconds - results[1].seconds
+        let samePixels = psnr(results[1].image, results[2].image).isInfinite
+        log("prompt reuse saved \(String(format: "%.1f", saved)) s per image")
+        log("previews: \(previews.count) shown, adding \(String(format: "%.1f", overhead)) s (\(String(format: "%.0f", 100 * overhead / results[1].seconds))%)")
+        log("final image with previews identical to without: \(samePixels ? "yes" : "NO")")
+        if let out {
+            for (i, p) in previews.enumerated() {
+                let url = URL(filePath: out).appending(path: "preview-\(i + 1).png")
+                if let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) {
+                    CGImageDestinationAddImage(dest, p, nil)
+                    CGImageDestinationFinalize(dest)
+                }
+            }
+            log("saved previews to \(out)")
+        }
+        let ok = samePixels && !previews.isEmpty
+        log(ok ? "PASS" : "FAIL")
+        return ok
+    }
+
+    /// Downloads a catalog model if it isn't installed yet.
+    private static func ensureInstalled(id: String, store: ModelStore, log: (String) -> Void) async -> InstalledModel? {
+        if let model = store.model(id: id) { return model }
+        guard let entry = ModelCatalog.entries.first(where: { $0.id == id }) else { log("unknown catalog id \(id)"); return nil }
+        log("downloading \(entry.name) (~\(entry.approxGB) GB)")
+        let start = Date()
+        store.download(entry)
+        var lastPct = -25
+        while store.downloads[id] != nil {
+            let pct = Int((store.downloads[id]?.fraction ?? 0) * 100)
+            if pct >= lastPct + 25 { log("download \(pct)%"); lastPct = pct }
+            try? await Task.sleep(for: .seconds(1))
+        }
+        if let error = store.lastError { log(error); return nil }
+        log("downloaded in \(Int(Date().timeIntervalSince(start))) s")
+        return store.model(id: id)
+    }
+
+    /// Mean-squared-error PSNR (dB) between two images of the same size; higher = closer.
+    private static func psnr(_ a: CGImage, _ b: CGImage) -> Double {
+        let w = a.width, h = a.height
+        func pixels(_ image: CGImage) -> [UInt8] {
+            var data = [UInt8](repeating: 0, count: w * h * 4)
+            let ctx = CGContext(data: &data, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return data
+        }
+        let p = pixels(a), q = pixels(b)
+        var sum = 0.0
+        for i in stride(from: 0, to: p.count, by: 4) {
+            for c in 0..<3 { let d = Double(Int(p[i + c]) - Int(q[i + c])); sum += d * d }
+        }
+        let mse = sum / Double(w * h * 3)
+        return mse == 0 ? .infinity : 10 * log10(255 * 255 / mse)
+    }
+
+    /// `-precisionTest <model id>` generates the same seed with 32-bit and 16-bit GPU
+    /// accumulation (each after a warm-up image) and reports speed and PSNR between them.
+    private static func runPrecisionTest(id: String, store: ModelStore, generator: Generator) async -> Bool {
+        func log(_ s: String) { print("[precision] \(s)"); fflush(stdout) }
+        guard let model = await ensureInstalled(id: id, store: store, log: log) else { return false }
+        let defaults = UserDefaults.standard
+        // Put back exactly what was there: an unset key must stay unset so the registered
+        // default (on) keeps applying, rather than being pinned to an explicit value.
+        let original = defaults.object(forKey: StableDiffusionBackend.lowPrecisionKey)
+        defer { defaults.set(original, forKey: StableDiffusionBackend.lowPrecisionKey) }
+
+        var request = GenerationRequest(prompt: "portrait of an old fisherman with a weathered face, harbour at dusk, detailed photo")
+        request.seed = 5
+        request.steps = Int(defaults.integer(forKey: "steps")).nonZero ?? 20
+        request.guidance = 7.5
+        var results: [(label: String, seconds: Double, image: CGImage)] = []
+        for low in [false, true] {
+            defaults.set(low, forKey: StableDiffusionBackend.lowPrecisionKey)
+            let label = low ? "16-bit accumulation" : "32-bit accumulation"
+            var warm = request
+            warm.seed = 99
+            let loadStart = Date()
+            _ = await generator.generate(model: model, request: warm, previewEvery: 0)  // load + warm-up
+            log("\(label): load + warm-up \(String(format: "%.0f", Date().timeIntervalSince(loadStart))) s")
+            let outcome = await generator.generate(model: model, request: request, previewEvery: 0)
+            guard case .saved(let record) = outcome, let image = generator.lastImage else {
+                log("\(label): \(outcome)"); return false
+            }
+            results.append((label, record.seconds, image))
+            log("\(label): \(String(format: "%.1f", record.seconds)) s for \(request.steps) steps (\(String(format: "%.2f", record.seconds / Double(request.steps))) s/step), saved \(record.fileName)")
+        }
+        generator.unloadModel()
+        let speedup = results[0].seconds / results[1].seconds
+        let db = psnr(results[0].image, results[1].image)
+        log("speed: 16-bit is \(String(format: "%.2f", speedup))× the 32-bit speed")
+        log("difference: PSNR \(db.isInfinite ? "∞ (identical)" : String(format: "%.1f dB", db)) (above ~35 dB is hard to see; above ~40 dB is practically identical)")
+        return true
     }
 
     /// `-preloadTest <model id>` starts a preload and immediately asks for an image: the
