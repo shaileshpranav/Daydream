@@ -7,14 +7,35 @@ import ImageIO
 /// unloading terminates the process, which is the surest way to free all of its memory.
 final class MLXBackend: ImageBackend {
     let model: InstalledModel
-    private var process: Process?
-    private var input: FileHandle?
-    private var reader: LineReader?
+    private let worker = MLXWorker()
     /// LoRAs baked into the currently loaded weights; nil when nothing is loaded.
     private var loadedLoRAs: [LoRARef]?
 
     init(model: InstalledModel) {
         self.model = model
+    }
+
+    /// UserDefaults key for "Skip near-identical steps" in Settings.
+    static let stepCacheKey = "mlxStepCache"
+    /// Share of steps whose model output is reused (mflux's step_cache_ratio). mflux
+    /// always computes the first and last 10% of steps and skips nothing below 10 steps.
+    static let stepCacheRatio = 0.25
+
+    func withSpeedSettings(_ request: GenerationRequest) -> GenerationRequest {
+        var recorded = request
+        recorded.stepCacheRatio = stepCacheRatio(for: request)
+        return recorded
+    }
+
+    func stepCacheRatio(for request: GenerationRequest) -> Double? {
+        guard MLXFamilies.family(id: model.mlxFamily)?.supportsStepCache == true,
+              UserDefaults.standard.bool(forKey: Self.stepCacheKey),
+              request.steps >= 10 else { return nil }
+        // A step-distilled LoRA (Fast mode) makes every one of its few steps count.
+        if let fast = model.fastLoRA, request.loras?.contains(where: { $0.source == fast.localURL.path }) == true {
+            return nil
+        }
+        return Self.stepCacheRatio
     }
 
     func load() throws {
@@ -28,7 +49,7 @@ final class MLXBackend: ImageBackend {
         guard let family = model.mlxFamily else {
             throw RuntimeError("\(model.name) has no MLX model family in its model.json.")
         }
-        if process?.isRunning != true { try startWorker() }
+        if !worker.isRunning { try worker.start() }
         let loras = request.loras ?? []
         try send([
             "op": "load",
@@ -61,19 +82,25 @@ final class MLXBackend: ImageBackend {
         previewEvery: Int,
         onStep: (Int, Int, CGImage?) -> Bool
     ) throws -> CGImage? {
+        if request.startImage != nil, !model.supportsStartImage {
+            throw RuntimeError("\(model.name) can't start from a picture. Remove the start image, or pick another model.")
+        }
         if loadedLoRAs == nil || needsReload(for: request) { try load(for: request) }
 
         let size = (request.aspect ?? .square).size(base: model.resolution)
         let out = FileManager.default.temporaryDirectory.appending(path: "mlx-\(UUID().uuidString).png")
         defer { try? FileManager.default.removeItem(at: out) }
         let supportsNegative = model.defaults?.supportsNegativePrompt ?? true
-        var startImage: [String: Any] = [:]
+        var optional: [String: Any] = [:]
         if let path = request.startImage {
             // mflux's image_strength is the share of steps skipped (higher keeps more of
             // the image), the inverse of `change`.
-            startImage = ["image_path": path, "image_strength": 1 - min(max(request.change ?? 0.6, 0.05), 1)]
+            optional["image_path"] = path
+            optional["image_strength"] = 1 - min(max(request.change ?? 0.6, 0.05), 1)
         }
-        try send(startImage.merging([
+        // Set by the generator through withSpeedSettings, so the saved record matches the run.
+        if let ratio = request.stepCacheRatio { optional["step_cache_ratio"] = ratio }
+        try send(optional.merging([
             "op": "generate",
             "prompt": request.prompt,
             "negative_prompt": supportsNegative ? request.negativePrompt : "",
@@ -89,7 +116,7 @@ final class MLXBackend: ImageBackend {
         var cancelSent = false
         var lastStep = (0, request.steps)
         func reportStep(_ step: Int, _ total: Int, _ preview: CGImage?) {
-            if !onStep(step, total, preview), !cancelSent, let pid = process?.processIdentifier {
+            if !onStep(step, total, preview), !cancelSent, let pid = worker.processIdentifier {
                 kill(pid, SIGUSR1)  // the worker stops at its next step
                 cancelSent = true
             }
@@ -120,6 +147,9 @@ final class MLXBackend: ImageBackend {
                 #endif
                 continue
             case "done":
+                #if DEBUG
+                print("[mlx] peak MLX memory: \(String(format: "%.1f", event["peak_gb"] as? Double ?? 0)) GB")
+                #endif
                 // Decode now: CGImageSource is lazy, and `out` is deleted when we return.
                 let options = [kCGImageSourceShouldCacheImmediately: true] as CFDictionary
                 guard let source = CGImageSourceCreateWithURL(out as CFURL, nil),
@@ -144,13 +174,7 @@ final class MLXBackend: ImageBackend {
     }
 
     func unload() {
-        if let process, process.isRunning {
-            process.terminate()
-            process.waitUntilExit()
-        }
-        process = nil
-        input = nil
-        reader = nil
+        worker.terminate()
         loadedLoRAs = nil
     }
 
@@ -158,81 +182,18 @@ final class MLXBackend: ImageBackend {
 
     // MARK: Worker process
 
-    private func startWorker() throws {
-        guard let script = MLXRuntime.workerScript else {
-            throw RuntimeError("mlx_worker.py is missing from the app bundle.")
-        }
-        let fm = FileManager.default
-        if !fm.fileExists(atPath: MLXRuntime.logURL.path) {
-            fm.createFile(atPath: MLXRuntime.logURL.path, contents: nil)
-        }
-        let log = try FileHandle(forWritingTo: MLXRuntime.logURL)
-        log.seekToEndOfFile()
-
-        let process = Process()
-        process.executableURL = MLXRuntime.python
-        process.arguments = ["-I", "-u", script.path]
-        var env = ProcessInfo.processInfo.environment
-        env["HF_HUB_DISABLE_TELEMETRY"] = "1"
-        env["TOKENIZERS_PARALLELISM"] = "false"
-        process.environment = env
-        let stdinPipe = Pipe()
-        let stdoutPipe = Pipe()
-        process.standardInput = stdinPipe
-        process.standardOutput = stdoutPipe
-        process.standardError = log  // mflux logs and tracebacks, for debugging
-        try process.run()
-
-        self.process = process
-        input = stdinPipe.fileHandleForWriting
-        reader = LineReader(handle: stdoutPipe.fileHandleForReading)
-        let ready = try nextEvent()
-        guard ready["event"] as? String == "ready" else {
-            throw RuntimeError("MLX worker didn't start. See \(MLXRuntime.logURL.path).")
-        }
-    }
-
     private func send(_ message: [String: Any]) throws {
-        guard let input else { throw RuntimeError("MLX worker isn't running.") }
-        var data = try JSONSerialization.data(withJSONObject: message)
-        data.append(0x0A)
-        try input.write(contentsOf: data)
+        try worker.send(message)
     }
 
     private func nextEvent() throws -> [String: Any] {
-        guard let line = reader?.readLine() else {
-            let status = process?.terminationStatus
-            unload()
+        do {
+            return try worker.nextEvent()
+        } catch let stopped as MLXWorker.Stopped {
+            loadedLoRAs = nil
             // A worker killed for using too much memory exits with SIGKILL (status 9).
-            throw RuntimeError("The MLX worker stopped\(status.map { " (status \($0))" } ?? ""), "
+            throw RuntimeError("The MLX worker stopped\(stopped.status.map { " (status \($0))" } ?? ""), "
                                + "most likely out of memory. Try a smaller size or model. Log: \(MLXRuntime.logURL.path)")
-        }
-        guard let object = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else {
-            return [:]
-        }
-        return object
-    }
-}
-
-/// Blocking line reader over a pipe; returns nil at end of file.
-private final class LineReader {
-    private let handle: FileHandle
-    private var buffer = Data()
-
-    init(handle: FileHandle) {
-        self.handle = handle
-    }
-
-    func readLine() -> String? {
-        while true {
-            if let newline = buffer.firstIndex(of: 0x0A) {
-                let line = buffer[buffer.startIndex..<newline]
-                buffer.removeSubrange(buffer.startIndex...newline)
-                return String(decoding: line, as: UTF8.self)
-            }
-            let chunk = handle.availableData  // blocks until data or EOF
-            if chunk.isEmpty { return nil }
-            buffer.append(chunk)
         }
     }
 }

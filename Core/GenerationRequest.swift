@@ -41,7 +41,17 @@ struct LoRARef: Codable, Hashable, Identifiable {
     var base: LoRABase?
 
     var id: String { source }
-    var name: String { URL(fileURLWithPath: source).deletingPathExtension().lastPathComponent }
+    var name: String {
+        // A Hugging Face "repo:file" reference is named after its repo.
+        let path = source.hasPrefix("/") ? source : String(source.prefix { $0 != ":" })
+        let url = URL(fileURLWithPath: path)
+        let name = url.deletingPathExtension().lastPathComponent
+        // A file downloaded as Loras/<owner>__<repo>/lora.safetensors: name it after the repo.
+        if name.lowercased() == "lora", url.deletingLastPathComponent().lastPathComponent.contains("__") {
+            return String(url.deletingLastPathComponent().lastPathComponent.split(separator: "__").last ?? "")
+        }
+        return name
+    }
 }
 
 /// Everything needed to reproduce an image with a given model.
@@ -59,6 +69,13 @@ struct GenerationRequest: Codable, Equatable {
     /// change it, 0 = keep it as is, 1 = ignore it entirely.
     var startImage: String?
     var change: Double? = 0.6
+    /// Share of steps whose model output was reused ("Skip near-identical steps" in
+    /// Settings). Filled in by the generator from the setting at the time, so a saved
+    /// picture records it; nil when nothing was skipped.
+    var stepCacheRatio: Double?
+    /// Whether a Core ML model on the GPU accumulated in 16-bit ("Faster GPU maths" in
+    /// Settings). Filled in like stepCacheRatio; nil on the Neural Engine and for MLX.
+    var fasterGPUMaths: Bool?
 
     var isImageToImage: Bool { startImage != nil }
 

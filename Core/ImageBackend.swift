@@ -15,6 +15,10 @@ protocol ImageBackend: AnyObject {
     /// True when the loaded state can't serve `request` and `load(for:)` must run again.
     func needsReload(for request: GenerationRequest) -> Bool
 
+    /// `request` with the speed settings this backend applies to it under the current
+    /// Settings (step reuse, faster GPU maths) filled in, so the saved picture records them.
+    func withSpeedSettings(_ request: GenerationRequest) -> GenerationRequest
+
     /// `onStep(step, total, preview)` returns false to cancel. `preview` is non-nil
     /// only on steps where `previewEvery` asks for one.
     func generate(
@@ -29,6 +33,7 @@ protocol ImageBackend: AnyObject {
 extension ImageBackend {
     func load(for request: GenerationRequest) throws { try load() }
     func needsReload(for request: GenerationRequest) -> Bool { false }
+    func withSpeedSettings(_ request: GenerationRequest) -> GenerationRequest { request }
 }
 
 enum BackendError: LocalizedError {

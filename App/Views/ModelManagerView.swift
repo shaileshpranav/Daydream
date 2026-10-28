@@ -18,16 +18,22 @@ struct ModelManagerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("", selection: $tab) {
-                ForEach(Tab.allCases) { tab in
-                    Text(tabTitle(tab)).tag(tab)
+            HeaderBar {
+                Text("Models").font(.headline)
+                Spacer()
+                Picker("", selection: $tab) {
+                    ForEach(Tab.allCases) { tab in
+                        Text(tabTitle(tab)).tag(tab)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                Spacer()
+                Button("Reveal Models Folder", systemImage: "folder") { NSWorkspace.shared.open(store.root) }
+                    .buttonStyle(IconButtonStyle())
+                    .help("Show the models folder in Finder")
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 420)
-            .padding(10)
-            Divider()
             if let error = store.lastError ?? loras.lastError {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.red)
@@ -43,9 +49,6 @@ struct ModelManagerView: View {
             }
         }
         .navigationTitle("Models")
-        .toolbar {
-            Button("Reveal Models Folder", systemImage: "folder") { NSWorkspace.shared.open(store.root) }
-        }
         .onAppear {
             if store.installed.isEmpty { tab = .add }
             if selectedModelID == nil { selectedModelID = store.installed.first?.id }
@@ -228,7 +231,7 @@ private struct ModelDetailView: View {
             Section("Memory") {
                 if let diskBytes {
                     let weights = Double(diskBytes) / 1e9
-                    let estimate = MemoryEstimate.gigabytes(weightsGB: weights, kind: model.kind, resolution: draft.resolution)
+                    let estimate = MemoryEstimate.gigabytes(weightsGB: weights, kind: model.kind, resolution: draft.resolution, family: model.mlxFamily)
                     let fit = MemoryEstimate.fit(estimate)
                     LabeledContent("On disk", value: ByteCountFormatter.string(fromByteCount: diskBytes, countStyle: .file))
                     VStack(alignment: .leading, spacing: 4) {
@@ -620,7 +623,7 @@ private struct CatalogRow: View {
     let entry: CatalogEntry
 
     var body: some View {
-        let estimate = MemoryEstimate.gigabytes(weightsGB: entry.approxGB, kind: entry.kind, resolution: entry.resolution)
+        let estimate = MemoryEstimate.gigabytes(weightsGB: entry.approxGB, kind: entry.kind, resolution: entry.resolution, family: entry.mlxFamily)
         let fit = MemoryEstimate.fit(estimate)
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
@@ -734,8 +737,8 @@ private struct MLXRuntimeRow: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Python + \(MLXRuntime.package)").font(.headline)
-                Text("Runs the MLX models (Z-Image, FLUX.2, Qwen-Image) on the GPU. Needs Python 3.11+ from Homebrew.")
+                Text("Python + \(MLXRuntime.packages.joined(separator: ", "))").font(.headline)
+                Text("Runs the MLX models (Z-Image, FLUX.2, Qwen-Image) and the MLX prompt rewriter on the GPU. Needs Python 3.11+ from Homebrew.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 switch runtime.status {
@@ -756,7 +759,10 @@ private struct MLXRuntimeRow: View {
             case .installing:
                 ProgressView().controlSize(.small)
             case .notInstalled:
-                Button("Install") { runtime.install() }
+                // An older install (different packages) only needs the new ones added.
+                Button(FileManager.default.isExecutableFile(atPath: MLXRuntime.python.path) ? "Update" : "Install") {
+                    runtime.install()
+                }
             case .failed:
                 Button("Retry") { runtime.install() }
             }

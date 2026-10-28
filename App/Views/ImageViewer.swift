@@ -9,12 +9,9 @@ struct ImageViewer: View {
     @Binding var index: Int?
     let onTrash: (GenerationRecord) -> Void
 
-    /// nil = fit to the window; otherwise pixels per image pixel (1 = actual size).
-    @State private var zoom: CGFloat?
-    @State private var pinchStart: CGFloat?
+    @State private var zoom = ZoomState()
     @State private var image: CGImage?
     @State private var confirmTrash = false
-    @State private var areaSize: CGSize = .zero
 
     private var record: GenerationRecord? {
         guard let index, records.indices.contains(index) else { return nil }
@@ -23,14 +20,16 @@ struct ImageViewer: View {
 
     var body: some View {
         if let record {
-            HSplitView {
-                imageArea(record)
-                    .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color.black.opacity(0.85))
-                InfoPanel(record: record, image: image, confirmTrash: $confirmTrash)
-                    .frame(minWidth: 260, idealWidth: 300, maxWidth: 380)
+            VStack(spacing: 0) {
+                headerBar
+                HSplitView {
+                    imageArea(record)
+                        .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color.black.opacity(0.85))
+                    InfoPanel(record: record, image: image, confirmTrash: $confirmTrash)
+                        .frame(minWidth: 260, idealWidth: 300, maxWidth: 380)
+                }
             }
-            .toolbar { toolbar(record) }
             .task(id: record.fileName) {
                 image = ImageSaver.thumbnail(for: record)  // instant, then the full image
                 let path = ImageSaver.folder.appending(path: record.fileName).path
@@ -46,73 +45,37 @@ struct ImageViewer: View {
     // MARK: Image
 
     private func imageArea(_ record: GenerationRecord) -> some View {
-        GeometryReader { geo in
-            if let image {
-                let size = CGSize(width: image.width, height: image.height)
-                if let zoom {
-                    ScrollView([.horizontal, .vertical]) {
-                        Image(decorative: image, scale: 1)
-                            .resizable()
-                            .interpolation(zoom >= 2 ? .none : .high)
-                            .frame(width: size.width * zoom, height: size.height * zoom)
-                            .frame(minWidth: geo.size.width, minHeight: geo.size.height)
-                    }
-                } else {
-                    Image(decorative: image, scale: 1)
-                        .resizable()
-                        .interpolation(.high)
-                        .scaledToFit()
-                        .frame(width: geo.size.width, height: geo.size.height)
-                }
-            } else {
-                ProgressView().frame(width: geo.size.width, height: geo.size.height)
+        ZoomableImage(image: image, state: zoom,
+                      dragItem: { NSItemProvider(contentsOf: ImageSaver.folder.appending(path: record.fileName)) ?? NSItemProvider() })
+            .overlay {
+                if image == nil { ProgressView() }
             }
-        }
-        .gesture(MagnifyGesture()
-            .onChanged { value in
-                let start = pinchStart ?? (zoom ?? fitZoom)
-                pinchStart = start
-                zoom = min(max(start * value.magnification, 0.1), 8)
-            }
-            .onEnded { _ in pinchStart = nil })
-        .onTapGesture(count: 2) { zoom = zoom == nil ? 1 : nil }
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { areaSize = $0 }
-        .help("Double-click to switch between fit and actual size; pinch to zoom")
     }
 
-    /// The zoom "fit" corresponds to, so pinching starts from what's on screen.
-    private var fitZoom: CGFloat {
-        guard let image, image.width > 0, image.height > 0, areaSize.width > 0 else { return 1 }
-        return min(areaSize.width / CGFloat(image.width), areaSize.height / CGFloat(image.height))
-    }
+    // MARK: Header
 
-    // MARK: Toolbar
-
-    @ToolbarContentBuilder
-    private func toolbar(_ record: GenerationRecord) -> some ToolbarContent {
-        ToolbarItemGroup(placement: .navigation) {
-            Button("Back to Gallery", systemImage: "chevron.backward") { index = nil }
+    private var headerBar: some View {
+        HeaderBar {
+            Button("Back to My Pictures", systemImage: "chevron.backward") { index = nil }
                 .keyboardShortcut(.cancelAction)
-        }
-        ToolbarItemGroup {
-            Button("Previous", systemImage: "arrow.left") { step(-1) }
-                .keyboardShortcut(.leftArrow, modifiers: [])
-                .disabled((index ?? 0) <= 0)
-            Text("\((index ?? 0) + 1) of \(records.count)")
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-            Button("Next", systemImage: "arrow.right") { step(1) }
-                .keyboardShortcut(.rightArrow, modifiers: [])
-                .disabled((index ?? 0) >= records.count - 1)
-            Divider()
-            Button("Fit", systemImage: "arrow.up.left.and.down.right.magnifyingglass") { zoom = nil }
-                .keyboardShortcut("0", modifiers: .command)
-            Button("Actual Size", systemImage: "1.magnifyingglass") { zoom = 1 }
-                .keyboardShortcut("1", modifiers: .command)
-            Button("Zoom In", systemImage: "plus.magnifyingglass") { zoom = min((zoom ?? 1) * 1.5, 8) }
-                .keyboardShortcut("+", modifiers: .command)
-            Button("Zoom Out", systemImage: "minus.magnifyingglass") { zoom = max((zoom ?? 1) / 1.5, 0.1) }
-                .keyboardShortcut("-", modifiers: .command)
+                .buttonStyle(IconButtonStyle())
+                .help("Back to all pictures (Esc)")
+            Text("My Pictures").font(.headline)
+            Spacer()
+            Group {
+                Button("Previous", systemImage: "arrow.left") { step(-1) }
+                    .keyboardShortcut(.leftArrow, modifiers: [])
+                    .disabled((index ?? 0) <= 0)
+                Text("\((index ?? 0) + 1) of \(records.count)")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                Button("Next", systemImage: "arrow.right") { step(1) }
+                    .keyboardShortcut(.rightArrow, modifiers: [])
+                    .disabled((index ?? 0) >= records.count - 1)
+                Divider().frame(height: 18).padding(.horizontal, 4)
+            }
+            .buttonStyle(IconButtonStyle())
+            ZoomControls(state: zoom)
         }
     }
 
@@ -162,6 +125,14 @@ private struct InfoPanel: View {
                 }
                 if r.isImageToImage {
                     LabeledContent("Image-to-image", value: "change \((r.change ?? 0.6).formatted(.number.precision(.fractionLength(2))))")
+                }
+                if let ratio = r.stepCacheRatio {
+                    LabeledContent("Skipped steps", value: "\(Int(ratio * 100))% near-identical steps reused")
+                        .help("\"Skip near-identical steps\" was on. To make this exact picture again, keep it on in Settings.")
+                }
+                if let faster = r.fasterGPUMaths {
+                    LabeledContent("GPU maths", value: faster ? "16-bit (faster)" : "32-bit")
+                        .help("\"Faster GPU maths\" was \(faster ? "on" : "off"). To make this exact picture again, set it the same way in Settings.")
                 }
                 LabeledContent("Time", value: "\(record.seconds.formatted(.number.precision(.fractionLength(1)))) s")
                 LabeledContent("Made", value: record.date.formatted(date: .abbreviated, time: .shortened))

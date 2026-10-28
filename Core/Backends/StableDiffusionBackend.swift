@@ -28,6 +28,14 @@ final class StableDiffusionBackend: ImageBackend {
         pipeline != nil && loadedLowPrecision != wantsLowPrecision
     }
 
+    /// Records the GPU accumulation the loaded pipeline uses. On the Neural Engine
+    /// (16-bit anyway) the setting doesn't apply, so nothing is recorded.
+    func withSpeedSettings(_ request: GenerationRequest) -> GenerationRequest {
+        var recorded = request
+        recorded.fasterGPUMaths = model.computeUnits == .cpuAndNeuralEngine ? nil : (loadedLowPrecision ?? wantsLowPrecision)
+        return recorded
+    }
+
     func load() throws {
         pipeline?.unloadResources()
         pipeline = nil

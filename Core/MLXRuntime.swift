@@ -1,8 +1,9 @@
 import Foundation
 import Observation
 
-/// The Python environment that runs MLX models: a venv with a pinned mflux, created on
-/// request in ~/Library/Application Support/CoreMLImageGen/MLX. Only MLX models need it.
+/// The Python environment that runs MLX models: a venv with a pinned mflux (image models)
+/// and mlx-lm (the prompt rewriter's language model), created on request in
+/// ~/Library/Application Support/CoreMLImageGen/MLX. Only MLX models need it.
 @MainActor
 @Observable
 final class MLXRuntime {
@@ -13,8 +14,9 @@ final class MLXRuntime {
         case failed(String)
     }
 
-    /// Bump together with mlx_worker.py when the worker needs a newer mflux.
-    nonisolated static let package = "mflux==0.24.0"
+    /// Bump together with mlx_worker.py when the worker needs a newer mflux or mlx-lm.
+    nonisolated static let packages = ["mflux==0.24.0", "mlx-lm==0.32.2"]
+    nonisolated static var packageSummary: String { packages.joined(separator: " ") }
 
     nonisolated static let root: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -30,7 +32,7 @@ final class MLXRuntime {
 
     nonisolated static var isInstalled: Bool {
         FileManager.default.isExecutableFile(atPath: python.path)
-            && (try? String(contentsOf: marker, encoding: .utf8)) == package
+            && (try? String(contentsOf: marker, encoding: .utf8)) == packageSummary
     }
 
     private(set) var status: Status = MLXRuntime.isInstalled ? .installed : .notInstalled
@@ -67,12 +69,12 @@ final class MLXRuntime {
             progress("Creating Python environment…")
             try run(systemPython, ["-m", "venv", venv.path], progress: progress)
         }
-        progress("Installing \(package) (downloads MLX; a few hundred MB)…")
+        progress("Installing \(packages.joined(separator: ", ")) (downloads MLX; a few hundred MB)…")
         try run(python.path, ["-m", "pip", "install", "--upgrade", "pip"], progress: progress)
-        try run(python.path, ["-m", "pip", "install", package], progress: progress)
+        try run(python.path, ["-m", "pip", "install"] + packages, progress: progress)
         progress("Checking the installation…")
-        try run(python.path, ["-I", "-c", "import mflux, mlx.core"], progress: progress)
-        try package.write(to: marker, atomically: true, encoding: .utf8)
+        try run(python.path, ["-I", "-c", "import mflux, mlx.core, mlx_lm"], progress: progress)
+        try packageSummary.write(to: marker, atomically: true, encoding: .utf8)
     }
 
     /// A Homebrew or python.org Python new enough for mflux (macOS's own python3 is 3.9).

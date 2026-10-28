@@ -119,6 +119,14 @@ struct InstalledModel: Codable, Identifiable, Hashable {
     /// The LoRA base this model accepts at generation time (MLX models only).
     var loraBase: LoRABase? { LoRABase.forMLXFamily(mlxFamily) }
 
+    /// The few-step LoRA behind Fast mode, if this model's family has one.
+    var fastLoRA: FastLoRA? { kind == .mlx ? MLXFamilies.family(id: mlxFamily)?.fastLoRA : nil }
+
+    /// Core ML models and most MLX families can start from a picture; MOSS-Image can't.
+    var supportsStartImage: Bool {
+        kind != .mlx || (MLXFamilies.family(id: mlxFamily)?.supportsStartImage ?? true)
+    }
+
     /// Steps and guidance this model is tuned for; SD defaults for Core ML models.
     var recommended: ModelDefaults {
         defaults ?? ModelDefaults(steps: kind == .sdxl ? 30 : 25, guidance: 7.5)

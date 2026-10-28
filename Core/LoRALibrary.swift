@@ -30,6 +30,9 @@ final class LoRALibrary {
 
     private(set) var items: [Item] = []
     private(set) var settings: [String: Settings] = [:]
+    /// Downloads in progress, by repo, as a fraction done. Kept here rather than in a view
+    /// so progress survives switching sections.
+    private(set) var downloads: [String: Double] = [:]
     var lastError: String?
 
     private var settingsURL: URL { ModelStore.lorasFolder.appending(path: ".lora-settings.json") }
@@ -87,7 +90,9 @@ final class LoRALibrary {
     /// Downloads a LoRA's .safetensors from a Hugging Face repo into the Loras folder.
     func download(repo: String, progress: @escaping @MainActor (Double) -> Void) async throws -> Item? {
         let repo = repo.trimmingCharacters(in: .whitespaces)
-        let (file, _) = try await LoRAInspector.inspect(repo: repo)
+        downloads[repo] = 0
+        defer { downloads[repo] = nil }
+        let (file, _, _) = try await LoRAInspector.inspect(repo: repo)
         let size = try await HuggingFace.listFiles(repo: repo, prefix: file).first { $0.path == file }?.size ?? 0
         let folder = ModelStore.lorasFolder.appending(path: repo.replacingOccurrences(of: "/", with: "__"))
         let dest = folder.appending(path: (file as NSString).lastPathComponent)
@@ -95,7 +100,10 @@ final class LoRALibrary {
         try await FileDownloader.download(HuggingFace.resolveURL(repo: repo, path: file), to: dest) { bytes in
             Task { @MainActor in
                 received.count += bytes
-                if size > 0 { progress(Double(received.count) / Double(size)) }
+                guard size > 0 else { return }
+                let fraction = Double(received.count) / Double(size)
+                if self.downloads[repo] != nil { self.downloads[repo] = fraction }
+                progress(fraction)
             }
         }
         reload()

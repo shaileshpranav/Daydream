@@ -13,67 +13,23 @@ struct MLXLoRASection: View {
     @State private var repo = ""
     @State private var checkingRepo = false
     @State private var message: String?
+    @AppStorage("accordion.loras") private var expanded = false
 
     private var base: LoRABase? { model.loraBase }
 
     var body: some View {
         Section {
-            ForEach($loras) { $lora in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        Text(lora.name).lineLimit(1).truncationMode(.middle)
-                        Spacer()
-                        Button {
-                            loras.removeAll { $0.id == lora.id }
-                        } label: {
-                            Image(systemName: "minus.circle")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Remove")
-                    }
-                    HStack {
-                        Slider(value: $lora.scale, in: 0...1.5, step: 0.05)
-                        Text(lora.scale, format: .number.precision(.fractionLength(2)))
-                            .monospacedDigit()
-                            .frame(width: 36)
-                    }
-                    let words = triggerWords(for: lora)
-                    if !words.isEmpty, !app.request.prompt.localizedCaseInsensitiveContains(words) {
-                        Button("Insert trigger words: \(words)") {
-                            let prompt = app.request.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-                            app.request.prompt = prompt.isEmpty ? words : "\(words), \(prompt)"
-                        }
-                        .buttonStyle(.link)
-                        .font(.caption)
-                    }
-                }
-                .help(lora.source)
-            }
-
-            if base == nil {
-                Text("This model doesn't support LoRAs yet.").foregroundStyle(.secondary)
-            } else {
-                libraryMenu
-                HStack {
-                    TextField("Hugging Face repo", text: $repo, prompt: Text("user/lora-repo"))
-                        .onSubmit(addRepo)
-                    if checkingRepo {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Button("Add", action: addRepo).disabled(!repo.contains("/"))
-                    }
-                }
-                Button("Add .safetensors File…") { picking = true }
-            }
-            if let message {
-                Text(message).font(.caption).foregroundStyle(.orange)
+            if expanded {
+                content
             }
         } header: {
-            Text("LoRA")
+            AccordionHeader(title: "LoRAs", summary: loras.isEmpty ? "None" : "\(loras.count) added", isExpanded: $expanded)
         } footer: {
-            Text("Only LoRAs trained for \(base?.label ?? "this model") can be added. Put files in Models/Loras to list them here. Changing LoRAs reloads the model on the next generate.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if expanded {
+                Text("Only LoRAs trained for \(base?.label ?? "this model") can be added. Put files in Models/Loras to list them here. Changing LoRAs reloads the model on the next picture.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .onAppear {
             dropIncompatible()  // e.g. came back from a Core ML model to a different MLX one
@@ -90,6 +46,60 @@ struct MLXLoRASection: View {
             if case .success(let urls) = result {
                 for url in urls { addFile(url) }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        ForEach($loras) { $lora in
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text(lora.name).lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    Button {
+                        loras.removeAll { $0.id == lora.id }
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Remove")
+                }
+                HStack {
+                    Slider(value: $lora.scale, in: 0...1.5, step: 0.05)
+                    Text(lora.scale, format: .number.precision(.fractionLength(2)))
+                        .monospacedDigit()
+                        .frame(width: 36)
+                }
+                let words = triggerWords(for: lora)
+                if !words.isEmpty, !app.request.prompt.localizedCaseInsensitiveContains(words) {
+                    Button("Insert trigger words: \(words)") {
+                        let prompt = app.request.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                        app.request.prompt = prompt.isEmpty ? words : "\(words), \(prompt)"
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                }
+            }
+            .help(lora.source)
+        }
+
+        if base == nil {
+            Text("This model doesn't support LoRAs yet.").foregroundStyle(.secondary)
+        } else {
+            libraryMenu
+            HStack {
+                TextField("Hugging Face repo", text: $repo, prompt: Text("user/lora-repo"))
+                    .onSubmit(addRepo)
+                if checkingRepo {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Add", action: addRepo).disabled(!repo.contains("/"))
+                }
+            }
+            Button("Add .safetensors File…") { picking = true }
+        }
+        if let message {
+            Text(message).font(.caption).foregroundStyle(.orange)
         }
     }
 
@@ -159,10 +169,12 @@ struct MLXLoRASection: View {
         Task {
             defer { checkingRepo = false }
             do {
-                let (file, result) = try await LoRAInspector.inspect(repo: source)
+                let (file, reference, result) = try await LoRAInspector.inspect(repo: source)
                 switch result {
                 case .known(base):
-                    loras.append(LoRARef(source: source, base: base))
+                    if !loras.contains(where: { $0.source == reference }) {
+                        loras.append(LoRARef(source: reference, base: base))
+                    }
                     repo = ""
                 case .known(let other):
                     message = "\(source) (\(file)) is a \(other.label) LoRA; \(model.name) needs a \(base.label) LoRA."

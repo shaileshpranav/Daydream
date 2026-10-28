@@ -200,36 +200,10 @@ final class ModelStore {
         }
         guard !files.isEmpty else { throw URLError(.fileDoesNotExist) }
 
-        let total = Double(files.reduce(0) { $0 + $1.size })
-        let counter = ByteCounter()
-        for file in files {
-            try Task.checkCancellation()
-            let relative = entry.zip != nil ? file.path : String(file.path.dropFirst((entry.folder ?? "").count))
-            // Multi-GB downloads over a flaky connection: retry a file a few times instead
-            // of failing the whole model on one dropped connection, resuming from the byte
-            // it stopped at when the server allows it (Hugging Face does).
-            var attempt = 0
-            var resumeData: Data?
-            while true {
-                attempt += 1
-                let before = counter.bytes
-                do {
-                    try await FileDownloader.download(HuggingFace.resolveURL(repo: entry.repo, path: file.path),
-                                                      to: staging.appending(path: relative),
-                                                      resumeData: resumeData) { bytes in
-                        Task { @MainActor in
-                            counter.bytes += bytes
-                            self.downloads[entry.id]?.fraction = Double(counter.bytes) / total
-                        }
-                    }
-                    break
-                } catch let error as URLError where error.code != .cancelled && attempt < 8 {
-                    resumeData = error.downloadTaskResumeData
-                    // Without resume data the file starts over, so its bytes are counted again.
-                    if resumeData == nil { counter.bytes = before }
-                    try await Task.sleep(for: .seconds(min(2 * attempt, 10)))
-                }
-            }
+        try await HuggingFace.download(repo: entry.repo, files: files, into: staging, relativePath: { file in
+            entry.zip != nil ? file.path : String(file.path.dropFirst((entry.folder ?? "").count))
+        }) { fraction in
+            self.downloads[entry.id]?.fraction = fraction
         }
 
         var resources = staging
@@ -321,6 +295,43 @@ enum HuggingFace {
         }
         return try JSONDecoder().decode([HFFile].self, from: data)
             .filter { $0.type == "file" && $0.path.hasPrefix(prefix) }
+    }
+
+    /// Downloads `files` from `repo` into `folder` (at `relativePath(file)`), reporting the
+    /// fraction done. Multi-GB downloads over a flaky connection: a file is retried a few
+    /// times instead of failing the whole model on one dropped connection, resuming from the
+    /// byte it stopped at when the server allows it (Hugging Face does).
+    @MainActor
+    static func download(repo: String, files: [HFFile], into folder: URL,
+                         relativePath: (HFFile) -> String = { $0.path },
+                         onProgress: @escaping @MainActor (Double) -> Void) async throws {
+        let total = Double(files.reduce(0) { $0 + $1.size })
+        let counter = ByteCounter()
+        for file in files {
+            try Task.checkCancellation()
+            var attempt = 0
+            var resumeData: Data?
+            while true {
+                attempt += 1
+                let before = counter.bytes
+                do {
+                    try await FileDownloader.download(resolveURL(repo: repo, path: file.path),
+                                                      to: folder.appending(path: relativePath(file)),
+                                                      resumeData: resumeData) { bytes in
+                        Task { @MainActor in
+                            counter.bytes += bytes
+                            onProgress(Double(counter.bytes) / total)
+                        }
+                    }
+                    break
+                } catch let error as URLError where error.code != .cancelled && attempt < 8 {
+                    resumeData = error.downloadTaskResumeData
+                    // Without resume data the file starts over, so its bytes are counted again.
+                    if resumeData == nil { counter.bytes = before }
+                    try await Task.sleep(for: .seconds(min(2 * attempt, 10)))
+                }
+            }
+        }
     }
 
     static func resolveURL(repo: String, path: String) -> URL {

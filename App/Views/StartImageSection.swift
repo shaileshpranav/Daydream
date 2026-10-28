@@ -8,11 +8,40 @@ struct StartImageSection: View {
     @State private var picking = false
     @State private var thumbnail: CGImage?
     @State private var dropTargeted = false
+    @AppStorage("accordion.startImage") private var expanded = false
 
     var body: some View {
-        @Bindable var app = app
+        if let model, !model.supportsStartImage {
+            unsupported(model)
+        } else {
+            editor
+        }
+    }
+
+    /// MOSS-Image has no image-to-image: say so, and offer to drop a start image left
+    /// over from another model (generating would fail with it).
+    private func unsupported(_ model: InstalledModel) -> some View {
         Section {
-            if let path = app.request.startImage {
+            if expanded || app.request.startImage != nil {
+                Text("\(model.name) can only make pictures from a description, not change an existing picture.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if app.request.startImage != nil {
+                    Button("Don't Use a Picture", role: .destructive) { app.request.startImage = nil }
+                }
+            }
+        } header: {
+            AccordionHeader(title: "Start Image",
+                            summary: app.request.startImage == nil ? "Not available" : "Not available: remove it",
+                            isExpanded: $expanded)
+        }
+    }
+
+    private var editor: some View {
+        @Bindable var app = app
+        return Section {
+            if !expanded {
+                EmptyView()
+            } else if let path = app.request.startImage {
                 HStack(alignment: .top, spacing: 10) {
                     Group {
                         if let thumbnail {
@@ -60,12 +89,17 @@ struct StartImageSection: View {
                     .foregroundStyle(dropTargeted ? Color.accentColor : .secondary.opacity(0.5)))
             }
         } header: {
-            Text("Start from a picture")
+            AccordionHeader(title: "Start Image",
+                            summary: app.request.startImage == nil ? "Off" : "Change \(Int((app.request.change ?? 0.6) * 100))%",
+                            isExpanded: $expanded)
         } footer: {
-            if app.request.startImage != nil, let model, model.kind.hasFixedSize {
+            if expanded, app.request.startImage != nil, let model, model.kind.hasFixedSize {
                 Text("\(model.name) makes square pictures, so the edges of a non-square picture are trimmed.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+        }
+        .onChange(of: app.request.startImage) {
+            if app.request.startImage != nil { expanded = true }
         }
         .dropDestination(for: URL.self) { urls, _ in
             guard let url = urls.first else { return false }

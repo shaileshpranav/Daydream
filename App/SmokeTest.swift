@@ -44,6 +44,10 @@ enum SmokeTest {
             Task { exit(await runLoRATest() ? 0 : 1) }
             return
         }
+        if defaults.bool(forKey: "mossTest") {
+            Task { exit(await runMOSSTest(store: store, generator: generator) ? 0 : 1) }
+            return
+        }
         if let idea = defaults.string(forKey: "enhanceTest") {
             Task { exit(await runEnhance(idea: idea) ? 0 : 1) }
             return
@@ -126,6 +130,70 @@ enum SmokeTest {
         if let error = store.lastError { log(error); return nil }
         log("downloaded in \(Int(Date().timeIntervalSince(start))) s")
         return store.model(id: id)
+    }
+
+    /// `-mossTest YES [-full YES]`: installs MOSS-Image SFT q4 and its Fast mode LoRA if needed,
+    /// then times two Fast mode pictures (8 steps, guidance 1). With -full it also times the
+    /// 50-step default with and without step reuse and compares the two pictures.
+    private static func runMOSSTest(store: ModelStore, generator: Generator) async -> Bool {
+        func log(_ s: String) { print("[moss] \(s)"); fflush(stdout) }
+        guard let model = await ensureInstalled(id: "mlx-moss-image-sft-q4", store: store, log: log),
+              let fast = model.fastLoRA else { return false }
+        if !fast.isDownloaded {
+            log("downloading \(fast.repo) (~\(fast.approxGB) GB)")
+            let start = Date()
+            var lastPct = -25
+            do {
+                _ = try await LoRALibrary().download(repo: fast.repo) { fraction in
+                    let pct = Int(fraction * 100)
+                    if pct >= lastPct + 25 { log("download \(pct)%"); lastPct = pct }
+                }
+            } catch {
+                log("LoRA download failed: \(error.localizedDescription)"); return false
+            }
+            guard fast.isDownloaded else { log("download didn't produce \(fast.localURL.path)"); return false }
+            log("downloaded in \(Int(Date().timeIntervalSince(start))) s")
+        }
+
+        var request = GenerationRequest(prompt: "A wooden signpost in a snowy pine forest at dawn. The sign is painted with the words \"FAST MODE\" in white letters. Soft morning light, photo")
+        request.seed = 42
+        func generate(_ label: String, _ request: GenerationRequest) async -> CGImage? {
+            let start = Date()
+            await generator.generate(model: model, request: request, previewEvery: 0)
+            if let error = generator.lastError { log("\(label): error: \(error)"); return nil }
+            guard let record = generator.lastRecord else { log("\(label): no record"); return nil }
+            let reuse = record.request.stepCacheRatio.map { ", step reuse \($0)" } ?? ""
+            log("\(label): \(String(format: "%.1f", Date().timeIntervalSince(start))) s total (incl. load), "
+                + "\(String(format: "%.1f", record.seconds)) s generation, \(request.steps) steps, guidance \(request.guidance)\(reuse)")
+            log("saved \(ImageSaver.folder.appending(path: record.fileName).path)")
+            return generator.lastImage
+        }
+
+        var fastRequest = request
+        fastRequest.loras = [LoRARef(source: fast.localURL.path, scale: 1, base: model.loraBase)]
+        fastRequest.steps = fast.steps
+        fastRequest.guidance = fast.guidance
+        for run in 1...2 {
+            guard await generate("fast run \(run)", fastRequest) != nil else { return false }
+        }
+        guard UserDefaults.standard.bool(forKey: "full") else {
+            generator.unloadModel()
+            return true
+        }
+
+        var slowRequest = request
+        slowRequest.steps = model.recommended.steps
+        slowRequest.guidance = model.recommended.guidance
+        let defaults = UserDefaults.standard
+        let original = defaults.object(forKey: MLXBackend.stepCacheKey)
+        defer { defaults.set(original, forKey: MLXBackend.stepCacheKey) }
+        defaults.set(true, forKey: MLXBackend.stepCacheKey)
+        guard let reused = await generate("50 steps, step reuse on", slowRequest) else { return false }
+        defaults.set(false, forKey: MLXBackend.stepCacheKey)
+        guard let full = await generate("50 steps, step reuse off", slowRequest) else { return false }
+        log("step reuse vs none, same seed: PSNR \(String(format: "%.1f", psnr(reused, full))) dB")
+        generator.unloadModel()
+        return true
     }
 
     /// Mean-squared-error PSNR (dB) between two images of the same size; higher = closer.
@@ -240,6 +308,19 @@ enum SmokeTest {
             ("mflux-community/qwen-image-2-1-mflux-q5", "qwen-image-2.1"),
             ("mflux-community/qwen-image-edit-2511-mflux-q4", nil),
             ("filipstrand/Z-Image-Turbo-mflux-4bit", "z-image-turbo"),
+            ("mflux-community/moss-image-sft-mflux-q4", "moss-image"),
+            ("mflux-community/moss-image-base-mflux-q8", "moss-image-base"),
+            ("chinoll/Moss-Image-Edit", nil),
+            ("mflux-community/flux-3-image-klein-mflux-q4", "flux3-klein"),
+            ("mflux-community/flux-3-image-klein-base-mflux-q4", nil),
+            ("mflux-community/iris-3b-turbo-mflux-q4", "iris-3b-turbo"),
+            ("mflux-community/iris-3b-mflux-q8", nil),
+            ("mflux-community/anima-turbo-mflux-q4", "anima-turbo"),
+            ("mflux-community/anima-aesthetic-mflux-q5", "anima-aesthetic"),
+            ("mflux-community/anima-base-mflux-q8", "anima-base"),
+            ("mflux-community/ernie-image-turbo-mflux-q4", "ernie-image-turbo"),
+            ("mflux-community/ernie-image-base-mflux-q3", "ernie-image"),
+            ("cagliostrolab/animagine-xl-4.0", nil),
         ]
         for (repo, expected) in repos {
             let got = MLXFamilies.detect(repo: repo)?.id
@@ -268,6 +349,35 @@ enum SmokeTest {
             log("rename/defaults round trip: \(pass ? "✓" : "✗")")
             store.update(original)
             log("restored: \(store.model(id: original.id)?.name == original.name && store.model(id: original.id)?.defaults == original.defaults ? "✓" : "✗")")
+        }
+        // MOSS-Image Fast mode: the LoRA the library would download (header only) is the file
+        // Fast mode looks for, at the path LoRALibrary.download writes.
+        if let fast = MLXFamilies.family(id: "moss-image")?.fastLoRA {
+            do {
+                let (file, _, result) = try await LoRAInspector.inspect(repo: fast.repo)
+                let folder = ModelStore.lorasFolder.appending(path: fast.repo.replacingOccurrences(of: "/", with: "__"))
+                let pass = file == fast.file && result == .known(.mossImage)
+                    && folder.appending(path: file).path == fast.localURL.path
+                ok = ok && pass
+                log("fast mode LoRA: \(file) \(result), at \(fast.localURL.path) \(pass ? "✓" : "✗")")
+            } catch {
+                log("fast mode LoRA check failed: \(error.localizedDescription)"); ok = false
+            }
+            let name = LoRARef(source: fast.localURL.path).name
+            ok = ok && name == "MOSS-Image-SFT-8-steps-dmd"
+            log("fast mode LoRA name: \(name) \(name == "MOSS-Image-SFT-8-steps-dmd" ? "✓" : "✗")")
+        }
+        // Saved settings: older records decode without stepCacheRatio; new ones keep it.
+        do {
+            let old = try JSONDecoder().decode(GenerationRequest.self, from: Data(#"{"prompt":"x","negativePrompt":"","steps":9,"guidance":0,"seed":1,"scheduler":"DPM-Solver++"}"#.utf8))
+            var new = GenerationRequest()
+            new.stepCacheRatio = 0.25
+            let back = try JSONDecoder().decode(GenerationRequest.self, from: JSONEncoder().encode(new))
+            let pass = old.stepCacheRatio == nil && back.stepCacheRatio == 0.25
+            ok = ok && pass
+            log("stepCacheRatio in saved settings: \(pass ? "✓" : "✗")")
+        } catch {
+            log("settings decode failed: \(error.localizedDescription)"); ok = false
         }
         let library = LoRALibrary()
         for item in library.items {
@@ -375,11 +485,15 @@ enum SmokeTest {
         for url in ModelStore.libraryLoRAs() {
             print("[lora] folder \(url.lastPathComponent): \(LoRAInspector.inspect(file: url))")
         }
-        do {
-            let (file, result) = try await LoRAInspector.inspect(repo: "renderartist/Technically-Color-Z-Image-Turbo")
-            print("[lora] repo renderartist/Technically-Color-Z-Image-Turbo (\(file)): \(result)")
-        } catch {
-            print("[lora] repo check failed: \(error.localizedDescription)")
+        // The second repo also ships helper weights and a full transformer: the LoRA must be
+        // picked by name and referenced as repo:file.
+        for repo in ["renderartist/Technically-Color-Z-Image-Turbo", "lodestones/MOSS-Image-SFT-8-steps-dmd"] {
+            do {
+                let (file, reference, result) = try await LoRAInspector.inspect(repo: repo)
+                print("[lora] repo \(repo) (\(file), loads as \(reference)): \(result)")
+            } catch {
+                print("[lora] repo check failed: \(error.localizedDescription)")
+            }
         }
         func header(_ tensors: [String: [Int]]) -> Data {
             try! JSONSerialization.data(withJSONObject: tensors.mapValues { ["dtype": "F16", "shape": $0, "data_offsets": [0, 0]] })
@@ -391,6 +505,8 @@ enum SmokeTest {
                        "double_blocks.0.img_mlp.0.lora_B.weight": [12288, 16]], .known(.flux1)),
             ("klein9b", ["double_blocks.0.img_attn.qkv.lora_A.weight": [16, 4096]], .known(.flux2Klein9B)),
             ("zimage", ["diffusion_model.layers.0.attention.to_q.lora_A.weight": [16, 3840]], .known(.zImage)),
+            ("moss", ["diffusion_model.layers.0.proj.ffn_up_gate.lora_down.weight": [128, 3072],
+                      "diffusion_model.layers.0.proj.q.lora_up.weight": [3072, 128]], .known(.mossImage)),
             ("sdxl", ["lora_unet_down_blocks_0.lora_down.weight": [8, 320], "lora_te2_text_model.lora_down.weight": [8, 1280]], .known(.sdxl)),
             ("sd15", ["lora_unet_down_blocks_0.lora_down.weight": [8, 320]], .known(.sd15)),
             ("qwen-no-metadata", ["transformer_blocks.0.attn.to_q.lora_A.weight": [16, 3072]], .unknown("")),
@@ -406,16 +522,21 @@ enum SmokeTest {
             print("[lora] synthetic \(name): \(got) \(pass ? "✓" : "✗ expected \(expected)")")
         }
         for value in ["flux2_klein_4b", "sdxl_base_v1-0", "stable-diffusion-xl-v1-base/lora", "flux-1-dev/lora",
-                      "z_image_turbo", "qwen_image_2_1", "qwen-image", "sd_v1"] {
+                      "z_image_turbo", "qwen_image_2_1", "qwen-image", "sd_v1",
+                      "flux-3-image-klein", "anima", "animagine-xl-3.1", "ernie_image", "moss_image"] {
             print("[lora] metadata \"\(value)\" -> \(LoRABase(metadata: value).map(\.label) ?? "nil")")
         }
         return ok
     }
 
-    /// `-enhanceTest "a fox in snow"` prints the enhancer's output for an SD 1.x and an SDXL model.
+    /// `-enhanceTest "a fox in snow"` prints the enhancer's output for each model kind.
+    /// Add `-promptEnhancerEngine mlx` to test the MLX language model instead of Apple Intelligence.
     private static func runEnhance(idea: String) async -> Bool {
-        print("[enhance] availability: \(PromptEnhancer.availability)")
-        for kind in [ModelKind.sd, .sdxl] {
+        print("[enhance] engine: \(PromptEnhancer.engineDescription), availability: \(PromptEnhancer.availability)")
+        for model in PromptModel.all {
+            print("[enhance] MLX model \(model.id): \(model.size), \(model.source), \(model.folder?.path ?? "not downloaded")")
+        }
+        for kind in [ModelKind.sd, .sdxl, .mlx] {
             let model = InstalledModel(id: "test", name: "test", kind: kind, computeUnits: .all, resolution: 512)
             let start = Date()
             do {
@@ -453,7 +574,7 @@ enum SmokeTest {
         guard let model = store.model(id: id) else { log("model not installed after download"); return false }
 
         if model.kind == .mlx, !MLXRuntime.isInstalled {
-            log("installing MLX runtime (\(MLXRuntime.package))")
+            log("installing MLX runtime (\(MLXRuntime.packageSummary))")
             let runtime = MLXRuntime()
             runtime.install()
             while case .installing = runtime.status { try? await Task.sleep(for: .seconds(1)) }

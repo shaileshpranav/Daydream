@@ -20,7 +20,7 @@ struct GalleryView: View {
             }
         }
         .navigationTitle("My Pictures")
-        .onAppear(perform: reload)
+        .task { records = await ImageSaver.loadRecords() }
         .onChange(of: generator.lastRecord) {
             // A new image: add it at the top rather than rescanning the whole folder,
             // keeping the viewer on the image it's showing.
@@ -47,8 +47,26 @@ struct GalleryView: View {
         }
     }
 
-    @ViewBuilder
     private var grid: some View {
+        VStack(spacing: 0) {
+            HeaderBar {
+                Text("My Pictures").font(.headline)
+                Text("\(records.count)").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                SearchField(prompt: "Search prompts and models", text: $search)
+                Button("Open Folder", systemImage: "folder") {
+                    NSWorkspace.shared.open(ImageSaver.folder)
+                }
+                .buttonStyle(IconButtonStyle())
+                .help("Open the pictures folder in Finder")
+            }
+            gridContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private var gridContent: some View {
         Group {
             if records.isEmpty {
                 ContentUnavailableView {
@@ -80,7 +98,7 @@ struct GalleryView: View {
                                     Divider()
                                     Button("Move to Trash", role: .destructive) {
                                         ImageSaver.delete(record)
-                                        reload()
+                                        records.removeAll { $0 == record }
                                     }
                                 }
                         }
@@ -89,16 +107,6 @@ struct GalleryView: View {
                 }
             }
         }
-        .searchable(text: $search, prompt: "Search descriptions")
-        .toolbar {
-            Button("Open Folder", systemImage: "folder") {
-                NSWorkspace.shared.open(ImageSaver.folder)
-            }
-        }
-    }
-
-    private func reload() {
-        records = ImageSaver.loadRecords()
     }
 }
 

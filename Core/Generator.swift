@@ -95,6 +95,9 @@ final class Generator {
 
         do {
             let backend = try await prepareBackend(for: model, request: request)
+            // Record the speed settings this run applies (they follow the current Settings, not
+            // what a restored picture used), so the saved settings describe this picture.
+            let request = backend.withSpeedSettings(request)
             phase = .generating(step: 0, total: request.steps)
             let start = Date()
             let flag = cancelFlag

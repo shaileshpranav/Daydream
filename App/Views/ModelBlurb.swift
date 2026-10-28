@@ -15,6 +15,11 @@ enum ModelBlurb {
         case "z-image-turbo", "z-image": return "Realistic photos with lots of detail"
         case "flux2-klein-4b", "flux2-klein-9b": return "Quick, sharp pictures in any style"
         case "qwen-image-2.1-turbo", "qwen-image-2.1": return "Follows long descriptions and draws text well"
+        case "moss-image", "moss-image-base": return "Posters and signs with clear, correctly spelled text"
+        case "flux3-klein": return "Sharp, modern pictures in any style"
+        case "iris-3b-turbo": return "Small and quick, in a few steps"
+        case "anima-turbo", "anima-aesthetic", "anima-base": return "Anime and illustration"
+        case "ernie-image-turbo", "ernie-image": return "Realistic photos, and it can change your own pictures"
         default: break
         }
         switch kind {
@@ -31,6 +36,11 @@ enum ModelBlurb {
         case "sd15-palettized", "sd21-base-palettized", "mlx-flux2-klein-4b-q4": "fast"
         case "sd15", "mlx-z-image-turbo-q4": "medium speed"
         case "mlx-qwen-image-2.1-turbo-q4": "slow"
+        case "mlx-moss-image-sft-q4": "very slow at 50 steps; quick with the 8-step LoRA"
+        // Not measured on this Mac yet: going by step counts and the mflux READMEs.
+        case "mlx-iris-3b-turbo-q4", "mlx-anima-turbo-q4": "fast"
+        case "mlx-ernie-image-turbo-q4": "medium speed"
+        case "mlx-flux3-klein-q4": "slow"
         case "sdxl-base-mbp-4.5": "slow: about 4 minutes a picture"
         default: nil
         }
@@ -44,5 +54,10 @@ enum ModelBlurb {
         "mlx-z-image-turbo-q4": "Realistic photos with lots of detail",
         "mlx-flux2-klein-4b-q4": "Quick, sharp pictures in any shape and style",
         "mlx-qwen-image-2.1-turbo-q4": "Follows long descriptions and draws text well. Needs lots of memory",
+        "mlx-moss-image-sft-q4": "Posters and signs with clear text, in English or Chinese",
+        "mlx-iris-3b-turbo-q4": "Small and quick, in just 4 steps",
+        "mlx-anima-turbo-q4": "Anime and illustration. Smallest MLX model",
+        "mlx-flux3-klein-q4": "Sharp, modern pictures in any style",
+        "mlx-ernie-image-turbo-q4": "Realistic photos in 8 steps, and it can change your own pictures",
     ]
 }

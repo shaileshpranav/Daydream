@@ -38,14 +38,23 @@ enum ImageSaver {
         return record
     }
 
-    static func loadRecords() -> [GenerationRecord] {
+    /// Every saved record, newest first. Reads one JSON file per image, so it runs off the
+    /// main thread: with a few hundred pictures it would otherwise stall opening Create or
+    /// My Pictures.
+    static func loadRecords() async -> [GenerationRecord] {
+        await Task.detached(priority: .userInitiated) { readRecords() }.value
+    }
+
+    private static func readRecords() -> [GenerationRecord] {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+        // The directory listing already says which PNGs exist: no stat per record.
+        let images = Set(files.lazy.filter { $0.pathExtension == "png" }.map(\.lastPathComponent))
         return files
             .filter { $0.pathExtension == "json" }
             .compactMap { try? decoder.decode(GenerationRecord.self, from: Data(contentsOf: $0)) }
-            .filter { FileManager.default.fileExists(atPath: folder.appending(path: $0.fileName).path) }
+            .filter { images.contains($0.fileName) }
             .sorted { $0.date > $1.date }
     }
 

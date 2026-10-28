@@ -1,21 +1,37 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// The Create workspace: settings on the left, the image in the middle, recent pictures on the right.
 struct GenerateView: View {
     @Environment(AppState.self) private var app
     @Environment(ModelStore.self) private var store
     @Environment(Generator.self) private var generator
     @Environment(GenerationQueue.self) private var queue
+    @Environment(LoRALibrary.self) private var library
+    @State private var fastModeError: String?
     @AppStorage("previewEvery") private var previewEvery = 5
     @AppStorage("batchCount") private var batchCount = 1
     @AppStorage("randomSeed") private var randomSeed = true
     @AppStorage("preloadModels") private var preloadModels = true
-    @AppStorage("showAdvancedOptions") private var showAdvanced = false
+    @AppStorage("showGalleryPanel") private var showGallery = true
+    @AppStorage("showImageInfo") private var showInfo = false
+    @AppStorage("accordion.generation") private var generationOpen = true
+    @AppStorage("accordion.image") private var imageOpen = true
     @State private var viewedImage: CGImage?
     @State private var enhancing = false
     @State private var beforeEnhance: PromptEnhancer.Result?
     @State private var enhanceError: String?
     @State private var lastEnhanced: String?
+    // Read so the Add Detail button updates when the engine changes in Settings.
+    @AppStorage(PromptEnhancer.engineKey) private var enhancerEngine = PromptEnhancer.Engine.appleIntelligence.rawValue
+    @AppStorage(PromptEnhancer.modelKey) private var enhancerModel = PromptModel.defaultID
+    @AppStorage(Ollama.modelKey) private var ollamaModel = ""
+    /// Saved pictures, newest first, for the gallery panel.
+    @State private var records: [GenerationRecord] = []
+    /// Pictures moved to the Trash this session, so the latest one disappears from view too.
+    @State private var trashed: Set<String> = []
+    @State private var confirmTrash = false
+    @State private var zoom = ZoomState()
 
     private var runnableModels: [InstalledModel] {
         store.installed.filter { $0.kind.isRunnable }
@@ -31,87 +47,83 @@ struct GenerateView: View {
                 WelcomeView()
             } else {
                 HSplitView {
-                    controls
-                        .frame(minWidth: 320, idealWidth: 360, maxWidth: 440)
-                    output
+                    parameters
+                        .frame(minWidth: 320, idealWidth: 360, maxWidth: 440, maxHeight: .infinity)
+                    viewer
                         .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
+                    if showGallery {
+                        GalleryPanel(records: records, selected: shownRecord, onSelect: select, onTrash: trash)
+                            .frame(minWidth: 180, idealWidth: 240, maxWidth: 420, maxHeight: .infinity)
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .navigationTitle("Create")
-    }
-
-    // MARK: Controls
-
-    private var controls: some View {
-        @Bindable var app = app
-        return Form {
-            Section {
-                Picker("Model", selection: Binding(
-                    get: { selectedModel?.id },
-                    set: { app.selectedModelID = $0 }
-                )) {
-                    ForEach(runnableModels) { model in
-                        Text(model.name).tag(Optional(model.id))
-                    }
-                }
-                if let selectedModel {
-                    Text(ModelBlurb.tagline(for: selectedModel))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if let loras = selectedModel.loras, !loras.isEmpty {
-                        LabeledContent("Built-in style", value: loras.map(\.label).joined(separator: ", "))
-                            .help("Fused into this model at conversion. Add the LoRA's trigger words to your description.")
-                    }
-                }
-            }
-
-            Section {
-                ZStack(alignment: .topLeading) {
-                    if app.request.prompt.isEmpty {
-                        Text("A cozy cabin in snowy woods at dusk, warm light in the windows…")
-                            .foregroundStyle(.tertiary)
-                            .padding(.top, 1)
-                            .padding(.leading, 5)
-                            .allowsHitTesting(false)
-                    }
-                    TextEditor(text: $app.request.prompt)
-                        .font(.body)
-                        .frame(minHeight: 90)
-                        .scrollContentBackground(.hidden)
-                }
-                promptTools
-                StyleChips(prompt: $app.request.prompt)
-            } header: {
-                Text("Describe your picture")
-            }
-
-            Section("Picture") {
-                shapeRow
-                if let selectedModel {
-                    qualityRow(for: selectedModel)
-                }
-                Stepper(value: $batchCount, in: 1...50) {
-                    Text(batchCount == 1 ? "Make 1 picture" : "Make \(batchCount) pictures")
-                }
-                .help(batchCount == 1 || randomSeed ? "" :
-                      "Variations \(app.request.seed)–\(app.request.seed &+ UInt32(batchCount - 1))")
-            }
-
-            StartImageSection(model: selectedModel)
-            if let error = app.startImageError {
-                Text(error).font(.caption).foregroundStyle(.red)
-            }
-
-            Section {
-                Toggle("Show advanced options", isOn: $showAdvanced.animation())
-            }
-            if showAdvanced {
-                advanced
+        .task {
+            records = await ImageSaver.loadRecords()
+            // Nothing made yet this session: show the newest saved picture instead of an empty canvas.
+            if generator.lastRecord == nil, app.viewedRecord == nil { app.viewedRecord = records.first }
+        }
+        .onChange(of: generator.lastRecord) {
+            app.viewedRecord = nil
+            if let record = generator.lastRecord, !records.contains(record) {
+                records.insert(record, at: 0)
             }
         }
-        .formStyle(.grouped)
-        .safeAreaInset(edge: .bottom, spacing: 0) { createBar }
+    }
+
+    // MARK: Parameters panel
+
+    private var parameters: some View {
+        @Bindable var app = app
+        return VStack(spacing: 0) {
+            createHeader
+            Divider()
+            Form {
+                Section {
+                    ZStack(alignment: .topLeading) {
+                        if app.request.prompt.isEmpty {
+                            Text("A cozy cabin in snowy woods at dusk, warm light in the windows…")
+                                .foregroundStyle(.tertiary)
+                                .padding(.top, 1)
+                                .padding(.leading, 5)
+                                .allowsHitTesting(false)
+                        }
+                        TextEditor(text: $app.request.prompt)
+                            .font(.body)
+                            .frame(minHeight: 96)
+                            .scrollContentBackground(.hidden)
+                    }
+                    if selectedModel?.defaults?.supportsNegativePrompt ?? true {
+                        TextField("Things to avoid", text: $app.request.negativePrompt,
+                                  prompt: Text("Things to avoid: blurry, extra fingers, text"), axis: .vertical)
+                            .labelsHidden()
+                            .lineLimit(1...4)
+                    }
+                    promptTools
+                    StyleChips(prompt: $app.request.prompt)
+                } header: {
+                    Text("Prompt").font(.headline)
+                }
+
+                generationSection
+                imageSection
+                StartImageSection(model: selectedModel)
+                if let error = app.startImageError {
+                    Text(error).font(.caption).foregroundStyle(.red)
+                }
+                if let selectedModel, selectedModel.kind == .mlx, selectedModel.loraBase != nil {
+                    MLXLoRASection(model: selectedModel, loras: Binding(
+                        get: { app.request.loras ?? [] },
+                        set: { app.request.loras = $0 }
+                    ))
+                }
+            }
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+        }
+        .background(Theme.panel, ignoresSafeAreaEdges: [])
         .onChange(of: selectedModel?.id) { oldID, _ in
             applyDefaults(previous: store.model(id: oldID))
         }
@@ -125,7 +137,69 @@ struct GenerateView: View {
         }
     }
 
+    private var canCreate: Bool {
+        selectedModel != nil && !app.request.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// The Create button, how many pictures to make, and stop: always visible at the top.
+    private var createHeader: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Button {
+                    guard let model = selectedModel else { return }
+                    // The seed field shows the seed actually used, so it can be kept or reused.
+                    if randomSeed { app.request.randomizeSeed() }
+                    queue.enqueue(model: model, request: app.request, count: batchCount, previewEvery: previewEvery)
+                } label: {
+                    Label(createTitle, systemImage: queue.isRunning ? "text.badge.plus" : "wand.and.stars")
+                }
+                .buttonStyle(CreateButtonStyle())
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(!canCreate)
+                .help(canCreate ? "⌘↩" : "Write a prompt first")
+
+                HStack(spacing: 2) {
+                    Text("×\(batchCount)")
+                        .monospacedDigit()
+                        .frame(minWidth: 28, alignment: .trailing)
+                    Stepper("Pictures", value: $batchCount, in: 1...50)
+                        .labelsHidden()
+                }
+                .help(batchCount == 1 || randomSeed ? "How many pictures to make"
+                      : "How many pictures to make: variations \(app.request.seed)–\(app.request.seed &+ UInt32(batchCount - 1))")
+
+                Button("Stop", systemImage: "xmark") { queue.cancelCurrent() }
+                    .buttonStyle(IconButtonStyle(size: 34))
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(!queue.isRunning)
+                    .help("Stop the picture being made (Esc); the rest still get made")
+            }
+            if queue.isRunning {
+                HStack(spacing: 4) {
+                    Text(queue.pendingCount == 0 ? "Making 1 picture" : "Making 1 · \(queue.pendingCount) waiting")
+                    if queue.pendingCount > 0 {
+                        Text("·")
+                        Button("Stop All") { queue.cancelAll() }
+                            .buttonStyle(.link)
+                        Text("·")
+                        Button("View Queue") { app.section = .queue }
+                            .buttonStyle(.link)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+    }
+
+    private var createTitle: String {
+        if queue.isRunning { return "Add to Queue" }
+        return batchCount == 1 ? "Create" : "Create \(batchCount)"
+    }
+
     private var promptTools: some View {
+        _ = (enhancerEngine, enhancerModel, ollamaModel)
         let availability = PromptEnhancer.availability
         return VStack(alignment: .leading, spacing: 4) {
             HStack {
@@ -134,7 +208,7 @@ struct GenerateView: View {
                 } label: {
                     Label("Surprise Me", systemImage: "dice")
                 }
-                .help("Fill in an example description")
+                .help("Fill in an example prompt")
 
                 Button {
                     enhance()
@@ -169,6 +243,92 @@ struct GenerateView: View {
         }
     }
 
+    // MARK: Accordions
+
+    private var generationSection: some View {
+        @Bindable var app = app
+        return Section {
+            if generationOpen {
+                Picker("Model", selection: Binding(
+                    get: { selectedModel?.id },
+                    set: { app.selectedModelID = $0 }
+                )) {
+                    ForEach(runnableModels) { model in
+                        Text(model.name).tag(Optional(model.id))
+                    }
+                }
+                if let selectedModel {
+                    Text(ModelBlurb.tagline(for: selectedModel))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let loras = selectedModel.loras, !loras.isEmpty {
+                        LabeledContent("Built-in style", value: loras.map(\.label).joined(separator: ", "))
+                            .help("Fused into this model at conversion. Add the LoRA's trigger words to your prompt.")
+                    }
+                    if let fast = selectedModel.fastLoRA {
+                        fastModeRow(for: selectedModel, fast: fast)
+                    }
+                    qualityRow(for: selectedModel)
+                }
+                Stepper("Steps: \(app.request.steps)", value: $app.request.steps, in: 1...100)
+                VStack(alignment: .leading) {
+                    Text("Guidance: \(app.request.guidance, specifier: "%.1f")")
+                    Slider(value: $app.request.guidance, in: 0...20, step: 0.5)
+                }
+                .help("How closely to follow the prompt. Higher follows the words more literally; too high looks harsh.")
+                if let selectedModel {
+                    if selectedModel.kind == .mlx {
+                        let float16 = MLXFamilies.family(id: selectedModel.mlxFamily)?.float16Compute ?? true
+                        LabeledContent("Runs on", value: float16 ? "GPU (MLX, float16)" : "GPU (MLX)")
+                    } else {
+                        Picker("Scheduler", selection: $app.request.scheduler) {
+                            ForEach(SchedulerChoice.allCases) { Text($0.rawValue).tag($0) }
+                        }
+                        LabeledContent("Runs on", value: selectedModel.computeUnits.label)
+                    }
+                    recommendedRow(for: selectedModel)
+                }
+            }
+        } header: {
+            AccordionHeader(title: "Generation",
+                            summary: [selectedModel?.name, "\(app.request.steps) steps"].compactMap { $0 }.joined(separator: " · "),
+                            isExpanded: $generationOpen)
+        }
+    }
+
+    private var imageSection: some View {
+        @Bindable var app = app
+        return Section {
+            if imageOpen {
+                shapeRow
+                HStack {
+                    TextField("Seed", value: $app.request.seed, format: .number.grouping(.never))
+                        .disabled(randomSeed)
+                    Button {
+                        app.request.randomizeSeed()
+                    } label: {
+                        Image(systemName: "dice")
+                    }
+                    .help("Pick a random seed")
+                    .disabled(randomSeed)
+                }
+                .help("The same prompt, settings and seed give the same picture.")
+                Toggle("New random seed each time", isOn: $randomSeed)
+                    .help("Off: keep the seed to tweak one picture by changing only the prompt or settings")
+            }
+        } header: {
+            AccordionHeader(title: "Image", summary: imageSummary, isExpanded: $imageOpen)
+        }
+    }
+
+    private var imageSummary: String? {
+        guard let model = selectedModel else { return nil }
+        if model.kind.hasFixedSize { return "\(model.resolution)×\(model.resolution)" }
+        let aspect = app.request.aspect ?? .square
+        let size = aspect.size(base: model.resolution)
+        return "\(aspect.rawValue) · \(size.width)×\(size.height)"
+    }
+
     @ViewBuilder
     private var shapeRow: some View {
         if let selectedModel {
@@ -181,17 +341,86 @@ struct GenerateView: View {
                     get: { app.request.aspect ?? .square },
                     set: { app.request.aspect = $0 }
                 )) {
-                    ForEach(AspectChoice.allCases) { aspect in
-                        Label(aspect.friendlyName, systemImage: aspect.icon).tag(aspect)
-                    }
+                    ForEach(AspectChoice.allCases) { Text($0.friendlyName).tag($0) }
                 }
                 .help("\(size.width) × \(size.height) pixels")
             }
         }
     }
 
+    // MARK: Fast mode
+
+    /// Fast mode is on when the model's few-step LoRA is in the request, so a saved
+    /// picture or queued job carries it like any other LoRA.
+    private func isFast(_ model: InstalledModel) -> Bool {
+        guard let fast = model.fastLoRA else { return false }
+        return app.request.loras?.contains { $0.source == fast.localURL.path } ?? false
+    }
+
+    private func fastModeRow(for model: InstalledModel, fast: FastLoRA) -> some View {
+        let progress = library.downloads[fast.repo]
+        let on = isFast(model)
+        return VStack(alignment: .leading, spacing: 4) {
+            Toggle("Fast mode", isOn: Binding(get: { on }, set: { setFast($0, model: model, fast: fast) }))
+                .disabled(progress != nil)
+            if let progress {
+                ProgressView(value: progress) {
+                    Text("Downloading the fast-mode add-on (\(fast.approxGB.formatted()) GB, once)…").font(.caption)
+                }
+            } else {
+                Text(on
+                     ? "\(fast.steps) steps, one model run each, with the \(LoRARef(source: fast.localURL.path).name) LoRA. Uses about \(fast.approxGB.formatted()) GB more memory."
+                     : "Off: \(model.recommended.steps) steps with two model runs each, which is slow on this Mac. On: \(fast.steps) runs in all."
+                       + (fast.isDownloaded ? "" : " Turning it on downloads a \(fast.approxGB.formatted()) GB add-on once."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let fastModeError {
+                Text(fastModeError).font(.caption).foregroundStyle(.red)
+            }
+        }
+    }
+
+    private func setFast(_ on: Bool, model: InstalledModel, fast: FastLoRA) {
+        fastModeError = nil
+        let path = fast.localURL.path
+        guard on else {
+            app.request.loras?.removeAll { $0.source == path }
+            applyRecommended(for: model)
+            return
+        }
+        guard fast.isDownloaded else {
+            Task {
+                do {
+                    _ = try await library.download(repo: fast.repo) { _ in }
+                    guard fast.isDownloaded else {
+                        fastModeError = "The download didn't contain \(fast.file)."
+                        return
+                    }
+                    // Only switch on if this model is still selected.
+                    if selectedModel?.id == model.id { setFast(true, model: model, fast: fast) }
+                } catch {
+                    fastModeError = "Couldn't download the fast-mode add-on: \(error.localizedDescription)"
+                }
+            }
+            return
+        }
+        var loras = app.request.loras ?? []
+        if !loras.contains(where: { $0.source == path }) {
+            loras.append(LoRARef(source: path, scale: 1, base: model.loraBase))
+        }
+        app.request.loras = loras
+        applyRecommended(for: model)
+    }
+
+    /// Steps and guidance to recommend: the few-step LoRA's in Fast mode.
+    private func recommended(for model: InstalledModel) -> ModelDefaults {
+        if isFast(model), let fast = model.fastLoRA { return fast.defaults }
+        return model.recommended
+    }
+
     private func qualityRow(for model: InstalledModel) -> some View {
-        let recommended = model.recommended
+        let recommended = recommended(for: model)
         return VStack(alignment: .leading, spacing: 4) {
             Picker("Quality", selection: Binding<Quality?>(
                 get: { Quality.allCases.first { $0.steps(for: recommended) == app.request.steps } },
@@ -201,73 +430,15 @@ struct GenerateView: View {
             }
             .pickerStyle(.segmented)
             Text(Quality.allCases.contains { $0.steps(for: recommended) == app.request.steps }
-                 ? "\(app.request.steps) steps. More steps take longer and add detail."
-                 : "Custom: \(app.request.steps) steps (set in advanced options)")
+                 ? "More steps take longer and add detail."
+                 : "Custom number of steps")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
     }
 
-    // MARK: Advanced
-
-    @ViewBuilder
-    private var advanced: some View {
-        @Bindable var app = app
-        if selectedModel?.defaults?.supportsNegativePrompt ?? true {
-            Section("Things to avoid") {
-                TextField("Things to avoid", text: $app.request.negativePrompt,
-                          prompt: Text("blurry, extra fingers, text"), axis: .vertical)
-                    .labelsHidden()
-                    .lineLimit(2...4)
-            }
-        }
-
-        Section("Fine-tuning") {
-            if let selectedModel {
-                recommendedRow(for: selectedModel)
-            }
-            Stepper("Steps: \(app.request.steps)", value: $app.request.steps, in: 1...100)
-            VStack(alignment: .leading) {
-                Text("How closely to follow the description: \(app.request.guidance, specifier: "%.1f")")
-                Slider(value: $app.request.guidance, in: 0...20, step: 0.5)
-            }
-            .help("Guidance. Higher follows the words more literally; too high looks harsh.")
-            HStack {
-                TextField("Variation number", value: $app.request.seed, format: .number.grouping(.never))
-                    .disabled(randomSeed)
-                Button {
-                    app.request.randomizeSeed()
-                } label: {
-                    Image(systemName: "dice")
-                }
-                .help("Pick a random variation")
-                .disabled(randomSeed)
-            }
-            .help("The seed. The same description, settings and variation number give the same picture.")
-            Toggle("New variation each time", isOn: $randomSeed)
-                .help("Off: keep the variation number to tweak one picture by changing only the description or settings")
-            if let selectedModel {
-                if selectedModel.kind == .mlx {
-                    LabeledContent("Runs on", value: "GPU (MLX, float16)")
-                } else {
-                    Picker("Scheduler", selection: $app.request.scheduler) {
-                        ForEach(SchedulerChoice.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    LabeledContent("Runs on", value: selectedModel.computeUnits.label)
-                }
-            }
-        }
-
-        if let selectedModel, selectedModel.kind == .mlx {
-            MLXLoRASection(model: selectedModel, loras: Binding(
-                get: { app.request.loras ?? [] },
-                set: { app.request.loras = $0 }
-            ))
-        }
-    }
-
     private func recommendedRow(for model: InstalledModel) -> some View {
-        let r = model.recommended
+        let r = recommended(for: model)
         let summary = "\(r.steps) steps · guidance \(r.guidance.formatted(.number.precision(.fractionLength(1))))"
             + (model.kind == .mlx ? "" : " · DPM-Solver++")
         return HStack {
@@ -282,51 +453,6 @@ struct GenerateView: View {
                     .help("Set steps, guidance\(model.kind == .mlx ? "" : " and scheduler") to what \(model.name) is tuned for")
             }
         }
-    }
-
-    // MARK: Create button
-
-    private var canCreate: Bool {
-        selectedModel != nil && !app.request.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private var createBar: some View {
-        VStack(spacing: 8) {
-            Button {
-                guard let model = selectedModel else { return }
-                // The seed field shows the seed actually used, so it can be kept or reused.
-                if randomSeed { app.request.randomizeSeed() }
-                queue.enqueue(model: model, request: app.request, count: batchCount, previewEvery: previewEvery)
-            } label: {
-                Label(createTitle, systemImage: queue.isRunning ? "text.badge.plus" : "wand.and.stars")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .keyboardShortcut(.return, modifiers: .command)
-            .disabled(!canCreate)
-            .help(canCreate ? "⌘↩" : "Describe your picture first")
-
-            if queue.isRunning {
-                HStack {
-                    Button("Stop This Picture", role: .cancel) { queue.cancelCurrent() }
-                        .keyboardShortcut(.cancelAction)
-                        .help("Stop the picture being made (Esc); the rest still get made")
-                    if queue.pendingCount > 0 {
-                        Button("Stop All (\(queue.pendingCount + 1))", role: .destructive) { queue.cancelAll() }
-                    }
-                }
-                .controlSize(.small)
-            }
-        }
-        .padding(12)
-        .background(.bar)
-        .overlay(alignment: .top) { Divider() }
-    }
-
-    private var createTitle: String {
-        if queue.isRunning { return "Add to Queue" }
-        return batchCount == 1 ? "Create Picture" : "Create \(batchCount) Pictures"
     }
 
     // MARK: Model defaults
@@ -349,19 +475,26 @@ struct GenerateView: View {
             return
         }
         guard let model = selectedModel else { return }
+        // Fast mode belongs to one model family (the MOSS LoRA also passes as a LoRA for
+        // MOSS-Image base, which it wasn't trained for): drop it when switching away.
+        let otherFastPaths = Set(MLXFamilies.all.compactMap { $0.fastLoRA?.localURL.path })
+            .subtracting([model.fastLoRA?.localURL.path].compactMap { $0 })
+        app.request.loras?.removeAll { otherFastPaths.contains($0.source) }
+        // An MLX model that takes no LoRAs (Iris-3B) would fail to load with any.
+        if model.kind == .mlx, model.loraBase == nil { app.request.loras = [] }
         if model.defaults != nil || previous?.defaults != nil {
             applyRecommended(for: model)
         }
     }
 
     private func isRecommended(for model: InstalledModel) -> Bool {
-        let r = model.recommended
+        let r = recommended(for: model)
         return app.request.steps == r.steps && app.request.guidance == r.guidance
             && (model.kind == .mlx || app.request.scheduler == .dpmSolver)
     }
 
     private func applyRecommended(for model: InstalledModel) {
-        let r = model.recommended
+        let r = recommended(for: model)
         app.request.steps = r.steps
         app.request.guidance = r.guidance
         if model.kind != .mlx { app.request.scheduler = .dpmSolver }
@@ -371,7 +504,7 @@ struct GenerateView: View {
 
     private func availabilityHelp(_ availability: PromptEnhancer.Availability) -> String {
         if case .unavailable(let reason) = availability { return reason }
-        return "Rewrite the description with more detail using Apple Intelligence, on device (⌘E). Press again for another version."
+        return "Rewrite the prompt with more detail using \(PromptEnhancer.engineDescription), on device (⌘E). Press again for another version."
     }
 
     private func enhance() {
@@ -397,121 +530,213 @@ struct GenerateView: View {
         }
     }
 
-    // MARK: Output
+    // MARK: Viewer
 
-    /// The finished image being looked at: a queue job the user clicked, else the latest.
+    /// The finished image being looked at: one picked in the gallery or queue, else the latest.
     private var shownRecord: GenerationRecord? {
-        app.viewedRecord ?? generator.lastRecord
+        if let viewed = app.viewedRecord { return viewed }
+        guard let latest = generator.lastRecord, !trashed.contains(latest.fileName) else { return nil }
+        return latest
     }
 
     private var shownImage: CGImage? {
-        generator.preview ?? (app.viewedRecord != nil ? viewedImage : nil) ?? generator.lastImage
+        if let preview = generator.preview { return preview }
+        if app.viewedRecord != nil { return viewedImage }
+        return shownRecord == nil ? nil : generator.lastImage
     }
 
-    private var output: some View {
-        VStack(spacing: 12) {
-            status
+    private var viewer: some View {
+        VStack(spacing: 0) {
+            viewerToolbar
+            progressLine
             ZStack {
-                RoundedRectangle(cornerRadius: 12).fill(.quaternary.opacity(0.5))
+                Theme.base
                 if let image = shownImage {
-                    Image(decorative: image, scale: 1)
-                        .resizable()
-                        .interpolation(.high)
-                        .scaledToFit()
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .shadow(color: .black.opacity(0.15), radius: 8, y: 2)
-                        .padding(12)
-                        .opacity(generator.preview != nil ? 0.75 : 1)
-                        .onDrag {
-                            guard let record = shownRecord else { return NSItemProvider() }
-                            return NSItemProvider(contentsOf: fileURL(record)) ?? NSItemProvider()
-                        }
+                    ZoomableImage(image: image, state: zoom, inset: 16, cornerRadius: 6) {
+                        guard let record = shownRecord else { return NSItemProvider() }
+                        return NSItemProvider(contentsOf: fileURL(record)) ?? NSItemProvider()
+                    }
+                    .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
+                    .opacity(generator.preview != nil ? 0.8 : 1)
                 } else if generator.phase != .idle {
                     ProgressView().controlSize(.large)
                 } else {
                     ContentUnavailableView("Your picture will appear here", systemImage: "photo.artframe",
-                                           description: Text("Describe what you'd like to see, then press Create Picture (⌘↩)."))
+                                           description: Text("Write a prompt on the left, then press Create (⌘↩)."))
                 }
             }
-            if let record = shownRecord, generator.preview == nil {
-                actions(for: record)
+            .overlay(alignment: .topLeading) {
+                if showInfo, let record = shownRecord, generator.preview == nil {
+                    InfoOverlay(record: record, image: shownImage, isMLX: store.model(id: record.modelID)?.kind == .mlx)
+                        .padding(14)
+                }
             }
-            if !queue.jobs.isEmpty {
-                QueueView()
-                    .frame(maxHeight: 220)
+            .overlay(alignment: .topTrailing) {
+                if shownImage != nil {
+                    HStack(spacing: 2) { ZoomControls(state: zoom) }
+                        .padding(4)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.border))
+                        .padding(14)
+                }
             }
+            .overlay(alignment: .bottom) { statusPill.padding(14) }
         }
-        .padding()
+        .background(Theme.base)
+        .onChange(of: shownRecord?.fileName) { zoom.fit() }
         .task(id: app.viewedRecord?.fileName) {
             guard let record = app.viewedRecord else { viewedImage = nil; return }
             let path = fileURL(record).path
             viewedImage = await Task.detached { StartImages.load(path) }.value
         }
-        .onChange(of: generator.lastRecord) { app.viewedRecord = nil }
+        .confirmationDialog("Move this picture to the Trash?", isPresented: $confirmTrash) {
+            Button("Move to Trash", role: .destructive) {
+                if let record = shownRecord { trash(record) }
+            }
+        }
     }
 
-    private func actions(for record: GenerationRecord) -> some View {
-        HStack {
-            Text("\(record.modelName) · \(record.seconds, specifier: "%.0f") s")
-                .foregroundStyle(.secondary)
-                .font(.callout)
-                .lineLimit(1)
-                .help("Variation \(record.request.seed)")
-            Spacer()
-            if app.viewedRecord != nil {
-                Button("Latest") { app.viewedRecord = nil }
+    /// Actions on the picture being shown, in a row above it.
+    private var viewerToolbar: some View {
+        let record = shownRecord
+        return HStack(spacing: 4) {
+            if app.viewedRecord != nil, generator.lastRecord != nil {
+                Button("Latest", systemImage: "arrow.left") { app.viewedRecord = nil }
+                    .controlSize(.small)
                     .help("Back to the most recent picture")
+                    .padding(.leading, 10)
             }
-            Button("Save…", systemImage: "square.and.arrow.down") { save(record) }
-            ShareLink(item: fileURL(record)) {
-                Label("Share", systemImage: "square.and.arrow.up")
-            }
-            Button("Copy", systemImage: "doc.on.doc") { copyShownImage() }
-            Menu {
+            Spacer(minLength: 0)
+            Group {
+                Button("Use Prompt", systemImage: "text.quote") {
+                    if let r = record?.request {
+                        app.request.prompt = r.prompt
+                        app.request.negativePrompt = r.negativePrompt
+                    }
+                }
+                .help("Use this picture's prompt")
+                Button("Use Seed", systemImage: "leaf") {
+                    if let seed = record?.request.seed {
+                        app.request.seed = seed
+                        randomSeed = false
+                    }
+                }
+                .help("Use this picture's seed (and stop picking a new one each time)")
+                Button("Use All", systemImage: "arrow.uturn.backward") { if let record { app.restore(record) } }
+                    .help("Use all of this picture's settings, including the model")
+                toolbarDivider
                 Button("Edit This Picture", systemImage: "photo.badge.arrow.down") {
-                    app.useAsStartImage(fileURL(record), for: selectedModel)
+                    if let record { app.useAsStartImage(fileURL(record), for: selectedModel) }
                 }
-                Button("Reuse These Settings", systemImage: "arrow.uturn.backward") { app.restore(record) }
-                Divider()
+                .help("Use as the start image, to change it with a new prompt")
+                toolbarDivider
+                Button("Info", systemImage: "info.circle") { showInfo.toggle() }
+                    .buttonStyle(IconButtonStyle(isSelected: showInfo))
+                    .keyboardShortcut("i", modifiers: .command)
+                    .help("Show how this picture was made (⌘I)")
+                toolbarDivider
+                Button("Copy", systemImage: "doc.on.doc") { copyShownImage() }
+                    .help("Copy the picture")
+                Button("Save…", systemImage: "square.and.arrow.down") { if let record { save(record) } }
+                    .help("Save a copy somewhere else")
+                if let record {
+                    ShareLink(item: fileURL(record)) { Label("Share", systemImage: "square.and.arrow.up") }
+                        .help("Share")
+                }
                 Button("Show in Finder", systemImage: "folder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([fileURL(record)])
+                    if let record { NSWorkspace.shared.activateFileViewerSelecting([fileURL(record)]) }
                 }
-            } label: {
-                Label("More", systemImage: "ellipsis.circle")
+                .help("Show in Finder")
+                toolbarDivider
+                Button("Move to Trash", systemImage: "trash") { confirmTrash = true }
+                    .help("Move to Trash")
             }
-            .menuIndicator(.hidden)
-            .fixedSize()
+            .buttonStyle(IconButtonStyle())
+            .disabled(record == nil || generator.preview != nil)
+            Spacer(minLength: 0)
+            Button(showGallery ? "Hide Gallery" : "Show Gallery", systemImage: "sidebar.right") {
+                withAnimation { showGallery.toggle() }
+            }
+            .buttonStyle(IconButtonStyle(isSelected: showGallery))
+            .help(showGallery ? "Hide the gallery panel" : "Show the gallery panel")
+            .padding(.trailing, 6)
         }
-        .labelStyle(.iconOnly)
-        .buttonStyle(.borderless)
-        .controlSize(.large)
+        .frame(maxWidth: .infinity, minHeight: HeaderBar<EmptyView>.height, maxHeight: HeaderBar<EmptyView>.height)
+        .background(Theme.panel, ignoresSafeAreaEdges: [])
+    }
+
+    private var toolbarDivider: some View {
+        Divider().frame(height: 18).padding(.horizontal, 4)
+    }
+
+    /// A thin bar under the toolbar showing progress through the steps.
+    private var progressLine: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Rectangle().fill(Theme.border)
+                switch generator.phase {
+                case .idle:
+                    EmptyView()
+                case .loading:
+                    Rectangle().fill(Theme.accent.opacity(0.5))
+                        .frame(width: geo.size.width * 0.3)
+                        .phaseAnimator([0.0, 1.0]) { bar, phase in
+                            bar.offset(x: phase * geo.size.width * 0.7)
+                        } animation: { _ in .easeInOut(duration: 1.1) }
+                case .generating(let step, let total):
+                    Rectangle().fill(Theme.accent)
+                        .frame(width: geo.size.width * Double(step) / Double(max(total, 1)))
+                        .animation(.easeOut(duration: 0.3), value: step)
+                }
+            }
+        }
+        .frame(height: 3)
     }
 
     @ViewBuilder
-    private var status: some View {
+    private var statusPill: some View {
         switch generator.phase {
         case .idle:
             if let error = generator.lastError {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.red)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
+                    .pill()
             }
         case .loading(let name):
-            ProgressView {
-                Text("Getting \(name) ready… The first time can take a few minutes.")
-            }
-            .progressViewStyle(.linear)
+            Text("Getting \(name) ready… The first time can take a few minutes.")
+                .pill()
         case .generating(let step, let total):
-            ProgressView(value: Double(step), total: Double(max(total, 1))) {
-                HStack {
-                    Text("Creating your picture: step \(step) of \(total)")
-                    if let eta = generator.etaSeconds, eta >= 1 {
-                        Text("· about \(Duration.seconds(eta.rounded()).formatted(.units(allowed: [.minutes, .seconds], width: .abbreviated))) left")
-                            .foregroundStyle(.secondary)
-                    }
+            HStack(spacing: 4) {
+                Text("Step \(step) of \(total)").monospacedDigit()
+                if let eta = generator.etaSeconds, eta >= 1 {
+                    Text("· about \(Duration.seconds(eta.rounded()).formatted(.units(allowed: [.minutes, .seconds], width: .abbreviated))) left")
+                        .foregroundStyle(.secondary)
                 }
             }
+            .pill()
+        }
+    }
+
+    // MARK: Gallery actions
+
+    private func select(_ record: GenerationRecord) {
+        app.viewedRecord = record == generator.lastRecord ? nil : record
+        trashed.remove(record.fileName)
+    }
+
+    private func trash(_ record: GenerationRecord) {
+        let index = records.firstIndex(of: record)
+        ImageSaver.delete(record)
+        trashed.insert(record.fileName)
+        records.removeAll { $0 == record }
+        guard record == shownRecord else { return }
+        // Show the next picture along, as a photo viewer would.
+        if let index, !records.isEmpty {
+            let next = records[min(index, records.count - 1)]
+            app.viewedRecord = next == generator.lastRecord ? nil : next
+        } else {
+            app.viewedRecord = nil
         }
     }
 
@@ -533,6 +758,164 @@ struct GenerateView: View {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.writeObjects([NSImage(cgImage: image, size: .zero)])
+    }
+}
+
+private extension View {
+    /// A small floating label over the image.
+    func pill() -> some View {
+        font(.callout)
+            .lineLimit(2)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(Theme.border))
+    }
+}
+
+// MARK: - Info overlay
+
+/// How the shown picture was made, floating over its top-left corner.
+private struct InfoOverlay: View {
+    let record: GenerationRecord
+    let image: CGImage?
+    let isMLX: Bool
+
+    var body: some View {
+        let r = record.request
+        VStack(alignment: .leading, spacing: 8) {
+            Text(r.prompt)
+                .lineLimit(8)
+                .textSelection(.enabled)
+            if !r.negativePrompt.isEmpty {
+                Text("Avoid: \(r.negativePrompt)")
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+            }
+            Divider()
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 3) {
+                row("Model", record.modelName)
+                row("Seed", String(r.seed))
+                row("Steps", "\(r.steps)")
+                row("Guidance", r.guidance.formatted(.number.precision(.fractionLength(1))))
+                if !isMLX { row("Scheduler", r.scheduler.rawValue) }
+                if let image { row("Size", "\(image.width) × \(image.height)") }
+                if let loras = r.loras, !loras.isEmpty {
+                    row("LoRAs", loras.map { "\($0.name) × \($0.scale.formatted(.number.precision(.fractionLength(2))))" }
+                        .joined(separator: ", "))
+                }
+                if r.isImageToImage {
+                    row("Start image", "change \((r.change ?? 0.6).formatted(.number.precision(.fractionLength(2))))")
+                }
+                if let ratio = r.stepCacheRatio {
+                    row("Skipped steps", "\(Int(ratio * 100))% near-identical steps reused")
+                }
+                if let faster = r.fasterGPUMaths {
+                    row("GPU maths", faster ? "16-bit (faster)" : "32-bit")
+                }
+                row("Time", "\(record.seconds.formatted(.number.precision(.fractionLength(1)))) s")
+                row("Made", record.date.formatted(date: .abbreviated, time: .shortened))
+            }
+            .font(.caption)
+        }
+        .font(.callout)
+        .padding(12)
+        .frame(maxWidth: 360, alignment: .leading)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.border))
+    }
+
+    private func row(_ label: String, _ value: String) -> some View {
+        GridRow {
+            Text(label).foregroundStyle(.secondary)
+            Text(value).textSelection(.enabled)
+        }
+    }
+}
+
+// MARK: - Gallery panel
+
+/// Recent pictures beside the image; click one to look at it.
+private struct GalleryPanel: View {
+    @Environment(AppState.self) private var app
+    @Environment(ModelStore.self) private var store
+    let records: [GenerationRecord]
+    let selected: GenerationRecord?
+    let onSelect: (GenerationRecord) -> Void
+    let onTrash: (GenerationRecord) -> Void
+
+    private let columns = [GridItem(.adaptive(minimum: 72), spacing: 6)]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Gallery").font(.headline)
+                Text("\(records.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Open My Pictures", systemImage: "arrow.up.left.and.arrow.down.right") { app.section = .gallery }
+                    .buttonStyle(IconButtonStyle(size: 26))
+                    .help("Open all pictures, with search and a full-size viewer")
+            }
+            .padding(.horizontal, 12)
+            .frame(height: HeaderBar<EmptyView>.height)
+            Divider()
+            if records.isEmpty {
+                ContentUnavailableView("No pictures yet", systemImage: "photo.on.rectangle",
+                                       description: Text("Pictures you create show up here."))
+                    .frame(maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 6) {
+                        ForEach(records) { record in
+                            Thumbnail(record: record, isSelected: record == selected)
+                                .onTapGesture { onSelect(record) }
+                                .contextMenu {
+                                    Button("Use All Settings") { app.restore(record) }
+                                    Button("Edit This Picture") {
+                                        app.useAsStartImage(ImageSaver.folder.appending(path: record.fileName),
+                                                            for: store.model(id: app.selectedModelID))
+                                    }
+                                    Button("Show in Finder") {
+                                        NSWorkspace.shared.activateFileViewerSelecting([ImageSaver.folder.appending(path: record.fileName)])
+                                    }
+                                    Divider()
+                                    Button("Move to Trash", role: .destructive) { onTrash(record) }
+                                }
+                        }
+                    }
+                    .padding(8)
+                }
+            }
+        }
+        .background(Theme.panel, ignoresSafeAreaEdges: [])
+    }
+}
+
+private struct Thumbnail: View {
+    let record: GenerationRecord
+    let isSelected: Bool
+    @State private var image: CGImage?
+
+    var body: some View {
+        ZStack {
+            Rectangle().fill(Theme.raised)
+            if let image {
+                Image(decorative: image, scale: 1).resizable().scaledToFill()
+            }
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6)
+            .strokeBorder(isSelected ? Theme.accent : .clear, lineWidth: 2))
+        .contentShape(Rectangle())
+        .help(record.request.prompt)
+        .task(id: record.fileName) {
+            let record = record
+            image = await Task.detached { ImageSaver.thumbnail(for: record, maxPixels: 256) }.value
+        }
     }
 }
 
@@ -567,15 +950,6 @@ extension AspectChoice {
         }
     }
 
-    var icon: String {
-        switch self {
-        case .square: "square"
-        case .portrait: "rectangle.portrait"
-        case .landscape: "rectangle"
-        case .wide: "rectangle.ratio.16.to.9"
-        case .tall: "rectangle.ratio.9.to.16"
-        }
-    }
 }
 
 // MARK: - Styles

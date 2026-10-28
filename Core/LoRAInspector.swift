@@ -3,7 +3,8 @@ import Foundation
 /// The base model a LoRA was trained for. A LoRA only works on its own base: the
 /// layer names and sizes must match the model's weights.
 enum LoRABase: String, Codable, CaseIterable {
-    case sd15, sdxl, flux1, flux2Klein4B, flux2Klein9B, zImage, qwenImage, qwenImage21
+    case sd15, sdxl, flux1, flux2Klein4B, flux2Klein9B, zImage, qwenImage, qwenImage21, mossImage
+    case flux3Klein, anima, ernieImage
 
     var label: String {
         switch self {
@@ -15,6 +16,10 @@ enum LoRABase: String, Codable, CaseIterable {
         case .zImage: "Z-Image"
         case .qwenImage: "Qwen-Image"
         case .qwenImage21: "Qwen-Image 2.1"
+        case .mossImage: "MOSS-Image"
+        case .flux3Klein: "FLUX 3 Klein"
+        case .anima: "Anima"
+        case .ernieImage: "ERNIE-Image"
         }
     }
 
@@ -25,7 +30,11 @@ enum LoRABase: String, Codable, CaseIterable {
         case "flux2-klein-4b": .flux2Klein4B
         case "flux2-klein-9b": .flux2Klein9B
         case "qwen-image-2.1-turbo", "qwen-image-2.1": .qwenImage21
-        default: nil
+        case "moss-image", "moss-image-base": .mossImage
+        case "flux3-klein": .flux3Klein
+        case "anima-turbo", "anima-aesthetic", "anima-base": .anima
+        case "ernie-image-turbo", "ernie-image": .ernieImage
+        default: nil  // Iris-3B takes no LoRAs in mflux
         }
     }
 
@@ -34,12 +43,17 @@ enum LoRABase: String, Codable, CaseIterable {
     /// `modelspec.architecture` ("stable-diffusion-xl-v1-base/lora").
     init?(metadata value: String) {
         let s = value.lowercased().filter { $0.isLetter || $0.isNumber }
+        if s.contains("flux3") { self = .flux3Klein; return }
+        if s.contains("erniei") { self = .ernieImage; return }
+        // "animagine" is an SDXL fine-tune, not Anima.
+        if s.hasPrefix("anima"), !s.hasPrefix("animagine") { self = .anima; return }
         if s.contains("flux2") || s.contains("fluxdot2") {
             if s.contains("9b") { self = .flux2Klein9B; return }
             if s.contains("4b") || s.contains("klein") { self = .flux2Klein4B; return }
             return nil
         }
         if s.contains("zimage") { self = .zImage; return }
+        if s.contains("mossimage") { self = .mossImage; return }
         if s.contains("qwen") {
             self = s.contains("21") ? .qwenImage21 : .qwenImage
             return
@@ -107,10 +121,12 @@ enum LoRAInspector {
 
     /// Detects the base model of a LoRA in a Hugging Face repo by fetching only its
     /// .safetensors header with HTTP range requests (a few KB, not the whole file).
-    static func inspect(repo: String) async throws -> (file: String, result: Result) {
+    /// `reference` is what mflux should load: the bare repo when it holds one .safetensors
+    /// file, else "repo:file" (mflux refuses a bare repo with several files).
+    static func inspect(repo: String) async throws -> (file: String, reference: String, result: Result) {
         let files = try await HuggingFace.listFiles(repo: repo, prefix: "")
             .filter { $0.path.hasSuffix(".safetensors") }
-        guard let file = files.min(by: { $0.size < $1.size }) else {
+        guard let file = loraFile(in: files) else {
             throw RuntimeError("\(repo) has no .safetensors file.")
         }
         let url = HuggingFace.resolveURL(repo: repo, path: file.path)
@@ -119,7 +135,20 @@ enum LoRAInspector {
         let length = Int(lengthData.withUnsafeBytes { $0.loadUnaligned(as: UInt64.self).littleEndian })
         guard length > 0, length < 100_000_000 else { throw RuntimeError("\(file.path) isn't a valid .safetensors file.") }
         let header = try await fetch(url, range: 8...(8 + length - 1))
-        return (file.path, classify(header: header))
+        let reference = files.count == 1 ? repo : "\(repo):\(file.path)"
+        return (file.path, reference, classify(header: header))
+    }
+
+    /// The LoRA among a repo's .safetensors files. Repos such as distillation LoRAs also ship
+    /// small helper weights (time embeddings) and a full transformer in a subfolder, so prefer
+    /// a top-level file named like a LoRA ("lora.safetensors" over "lora_latest.safetensors"),
+    /// then the smallest top-level file.
+    static func loraFile(in files: [HFFile]) -> HFFile? {
+        let topLevel = files.filter { !$0.path.contains("/") }
+        let candidates = topLevel.isEmpty ? files : topLevel
+        let named = candidates.filter { $0.path.lowercased().contains("lora") }
+        if let file = named.min(by: { ($0.path.count, $0.size) < ($1.path.count, $1.size) }) { return file }
+        return candidates.min { $0.size < $1.size }
     }
 
     private static func fetch(_ url: URL, range: ClosedRange<Int>) async throws -> Data {
@@ -169,6 +198,10 @@ enum LoRAInspector {
         if keys.contains(where: { $0.contains("noise_refiner") || $0.contains("context_refiner") })
             || (keys.contains(where: { $0.contains("layers.") && $0.contains(".attention.") }) && inputWidth(".attention.") == 3840) {
             return .zImage
+        }
+        // MOSS-Image: `layers.N.proj.{q,k,v,o,ffn_up_gate,ffn_down}` (kohya and PEFT alike).
+        if keys.contains(where: { $0.contains(".proj.ffn_up_gate.") }) {
+            return .mossImage
         }
         // FLUX (BFL layout): double_blocks. FLUX.2 Klein 4B is 3072 wide with an 18432
         // MLP; Klein 9B is 4096 wide; FLUX.1 is 3072 wide with a 12288 MLP.

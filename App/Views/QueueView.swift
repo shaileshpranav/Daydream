@@ -26,7 +26,8 @@ struct QueueView: View {
             }
         }
         .padding(10)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+        .background(Theme.panel, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.border))
     }
 
     private var summary: String {
@@ -75,8 +76,11 @@ struct QueueView: View {
         .background(background(for: job), in: RoundedRectangle(cornerRadius: 5))
         .contentShape(Rectangle())
         .onTapGesture {
-            // Click a finished image to look at it above the queue.
-            if case .done(let record) = job.state { app.viewedRecord = record }
+            // Click a finished image to look at it in Create.
+            if case .done(let record) = job.state {
+                app.viewedRecord = record
+                app.section = .generate
+            }
         }
     }
 
