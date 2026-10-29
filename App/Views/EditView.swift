@@ -242,7 +242,16 @@ private struct EditWorkspace: View {
 
     private var header: some View {
         HeaderBar {
-            Text(session.name).font(.headline).lineLimit(1)
+            // The picture's prompt reads better than its file name; files opened from disk
+            // have no prompt, so they show their name.
+            if let prompt = session.source?.request.prompt, !prompt.isEmpty {
+                Text(prompt).font(.headline).lineLimit(1).truncationMode(.tail)
+                    .help(prompt)
+                Text(session.name).font(.caption).foregroundStyle(.tertiary).lineLimit(1)
+                    .layoutPriority(-1)
+            } else {
+                Text(session.name).font(.headline).lineLimit(1)
+            }
             if let savedMessage {
                 Text(savedMessage).font(.caption).foregroundStyle(.secondary)
             }
@@ -299,17 +308,20 @@ private struct EditWorkspace: View {
 
     private var toolPanel: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 2) {
+            HStack(spacing: 4) {
                 ForEach(EditTool.allCases) { item in
-                    Button(item.rawValue, systemImage: item.icon) {
+                    Button {
                         tool = item
                         resetDrafts()
+                    } label: {
+                        Label(item.rawValue, systemImage: item.icon)
                     }
-                    .buttonStyle(IconButtonStyle(isSelected: tool == item, size: 36))
+                    .buttonStyle(ToolTabStyle(isSelected: tool == item))
                     .help(item.help)
                 }
             }
-            .padding(8)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 8)
             Divider()
             Form {
                 switch tool {

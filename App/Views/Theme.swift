@@ -25,6 +25,87 @@ enum Theme {
     }
 }
 
+/// A circular progress ring; `fraction` nil spins (for "getting ready" with no steps yet).
+struct ProgressRing: View {
+    let fraction: Double?
+    var lineWidth: CGFloat = 4
+    @State private var spinning = false
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(Theme.border, lineWidth: lineWidth)
+            Circle()
+                .trim(from: 0, to: fraction.map { max(0.02, min($0, 1)) } ?? 0.28)
+                .stroke(AngularGradient(colors: [Theme.accent.opacity(0.6), Theme.accent], center: .center),
+                        style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .rotationEffect(.degrees(-90 + (fraction == nil && spinning ? 360 : 0)))
+                .animation(fraction == nil ? .linear(duration: 1).repeatForever(autoreverses: false) : .easeOut(duration: 0.3),
+                           value: fraction == nil ? (spinning ? 1 : 0) : fraction ?? 0)
+        }
+        .padding(lineWidth / 2)
+        .onAppear { spinning = true }
+    }
+}
+
+/// A tab with its icon above a short label, sharing the row's width with its siblings
+/// (Edit's tool picker).
+struct ToolTabStyle: ButtonStyle {
+    var isSelected = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        TabBody(configuration: configuration, isSelected: isSelected)
+    }
+
+    private struct TabBody: View {
+        let configuration: ButtonStyle.Configuration
+        let isSelected: Bool
+        @State private var hovering = false
+
+        var body: some View {
+            configuration.label
+                .labelStyle(TabLabelStyle())
+                .foregroundStyle(isSelected ? Theme.accent : Color.primary.opacity(0.8))
+                .frame(maxWidth: .infinity, minHeight: 48)
+                .background(RoundedRectangle(cornerRadius: 8)
+                    .fill(isSelected ? Theme.accent.opacity(0.16) : hovering ? Theme.raised : .clear))
+                .opacity(configuration.isPressed ? 0.7 : 1)
+                .contentShape(Rectangle())
+                .onHover { hovering = $0 }
+        }
+    }
+
+    private struct TabLabelStyle: LabelStyle {
+        func makeBody(configuration: Configuration) -> some View {
+            VStack(spacing: 4) {
+                // A fixed box so icons of different heights keep the labels on one line.
+                configuration.icon
+                    .font(.system(size: 15))
+                    .frame(height: 18)
+                configuration.title
+                    .font(.caption2.weight(.medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            .padding(.horizontal, 2)
+        }
+    }
+}
+
+/// The Daydream mark: the gold sparkle from the app icon, for the top of the side rail.
+struct AppMark: View {
+    var size: CGFloat = 26
+
+    var body: some View {
+        Image(systemName: "sparkle")
+            .font(.system(size: size * 0.62, weight: .semibold))
+            .foregroundStyle(LinearGradient(colors: [Color(red: 1.0, green: 0.92, blue: 0.62), Theme.create],
+                                            startPoint: .topLeading, endPoint: .bottomTrailing))
+            .shadow(color: Theme.create.opacity(0.5), radius: 6)
+            .frame(width: size, height: size)
+            .accessibilityLabel("Daydream")
+    }
+}
+
 /// Light, dark, or following macOS (Settings → General, and View → Appearance).
 enum AppearanceChoice: String, CaseIterable, Identifiable {
     case system, light, dark

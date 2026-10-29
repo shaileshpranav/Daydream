@@ -89,10 +89,44 @@ struct ZoomableImage: View {
 }
 
 /// Fit, actual size, zoom out, the current zoom, zoom in, with ⌘0, ⌘1, ⌘− and ⌘+.
+/// `compact` is a small floating pill: −, the zoom (click it for fit ⇄ actual size), +.
 struct ZoomControls: View {
     let state: ZoomState
+    var compact = false
 
     var body: some View {
+        if compact {
+            HStack(spacing: 0) {
+                Button("Zoom Out", systemImage: "minus") { state.zoomOut() }
+                    .keyboardShortcut("-", modifiers: .command)
+                    .disabled(state.scale <= ZoomState.range.lowerBound)
+                    .help("Zoom out (⌘−)")
+                Button(state.isFit ? "Fit" : "\(Int((state.scale * 100).rounded()))%") { state.toggleFitAndActual() }
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(.medium).monospacedDigit())
+                    .frame(minWidth: 44)
+                    .help(state.isFit ? "Fitted to the window. Click for actual size (⌘1)" : "Click to fit (⌘0)")
+                Button("Zoom In", systemImage: "plus") { state.zoomIn() }
+                    .keyboardShortcut("+", modifiers: .command)
+                    .disabled(state.scale >= ZoomState.range.upperBound)
+                    .help("Zoom in (⌘+)")
+            }
+            .buttonStyle(IconButtonStyle(size: 26))
+            .background {
+                // Keyboard-only: ⌘0 and ⌘1 without taking room in the pill.
+                Group {
+                    Button("Fit") { state.fit() }.keyboardShortcut("0", modifiers: .command)
+                    Button("Actual Size") { state.actualSize() }.keyboardShortcut("1", modifiers: .command)
+                }
+                .opacity(0)
+                .accessibilityHidden(true)
+            }
+        } else {
+            full
+        }
+    }
+
+    private var full: some View {
         Group {
             Button("Fit", systemImage: "arrow.up.left.and.down.right.magnifyingglass") { state.fit() }
                 .keyboardShortcut("0", modifiers: .command)

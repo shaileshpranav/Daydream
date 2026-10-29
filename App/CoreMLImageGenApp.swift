@@ -205,11 +205,21 @@ private struct SideRail: View {
 
     var body: some View {
         VStack(spacing: 6) {
+            AppMark()
+                .help("Daydream")
+                .padding(.top, 2)
+            Divider()
+                .frame(width: 26)
+                .padding(.vertical, 4)
             ForEach(Array(AppSection.main.enumerated()), id: \.element) { index, section in
                 Button(section.rawValue, systemImage: section.icon) { app.section = section }
                     .buttonStyle(IconButtonStyle(isSelected: app.section == section, size: 38))
                     .help("\(section.rawValue) (⌥⌘\(index + 1))")
                     .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: [.command, .option])
+                    // Not a Tab stop: with keyboard navigation on, macOS would otherwise put
+                    // its focus ring on the first rail button whenever the window opens.
+                    // Sections have shortcuts instead.
+                    .focusable(false)
                     .overlay(alignment: .topTrailing) {
                         if section == .queue, queue.isRunning {
                             Text("\(queue.pendingCount + 1)")
@@ -226,6 +236,7 @@ private struct SideRail: View {
             Button(AppSection.settings.rawValue, systemImage: AppSection.settings.icon) { app.section = .settings }
                 .buttonStyle(IconButtonStyle(isSelected: app.section == .settings, size: 38))
                 .help("Settings (⌘,)")
+                .focusable(false)
         }
         .padding(.vertical, 10)
         .frame(width: 54)

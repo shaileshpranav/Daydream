@@ -35,6 +35,7 @@ struct GenerateView: View {
     @State private var confirmTrash = false
     @State private var trashError: String?
     @State private var zoom = ZoomState()
+    @State private var hoveringViewer = false
 
     private var runnableModels: [InstalledModel] {
         store.installed.filter { $0.kind.isRunnable }
@@ -588,10 +589,10 @@ struct GenerateView: View {
                     .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
                     .opacity(preview != nil ? 0.8 : 1)
                 } else if generator.phase != .idle {
-                    ProgressView().controlSize(.large)
+                    GenerationProgressCard(phase: generator.phase, etaSeconds: generator.etaSeconds,
+                                           prompt: queue.runningJob?.request.prompt)
                 } else {
-                    ContentUnavailableView("Your picture will appear here", systemImage: "photo.artframe",
-                                           description: Text("Write a prompt on the left, then press Create (⌘↩)."))
+                    EmptyCanvas()
                 }
             }
             .overlay(alignment: .topLeading) {
@@ -600,16 +601,21 @@ struct GenerateView: View {
                         .padding(14)
                 }
             }
-            .overlay(alignment: .topTrailing) {
+            .overlay(alignment: .bottomTrailing) {
+                // Out of the way: shown while the pointer is over the picture, or once zoomed.
                 if shownImage != nil {
-                    HStack(spacing: 2) { ZoomControls(state: zoom) }
-                        .padding(4)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.border))
+                    ZoomControls(state: zoom, compact: true)
+                        .padding(3)
+                        .background(.regularMaterial, in: Capsule())
+                        .overlay(Capsule().strokeBorder(Theme.border))
+                        .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
                         .padding(14)
+                        .opacity(hoveringViewer || !zoom.isFit ? 1 : 0)
+                        .animation(.easeOut(duration: 0.15), value: hoveringViewer)
                 }
             }
             .overlay(alignment: .bottom) { statusPill.padding(14) }
+            .onHover { hoveringViewer = $0 }
         }
         .background(Theme.base)
         .onChange(of: shownRecord?.fileName) { zoom.fit() }
@@ -644,28 +650,10 @@ struct GenerateView: View {
             }
             UpscaleStatus().padding(.leading, 10)
             Spacer(minLength: 0)
+            // The everyday actions; the rest are under More, so the row fits a small window.
             Group {
-                Button("Use Prompt", systemImage: "text.quote") {
-                    if let r = record?.request {
-                        app.request.prompt = r.prompt
-                        app.request.negativePrompt = r.negativePrompt
-                    }
-                }
-                .help("Use this picture's prompt")
-                Button("Use Seed", systemImage: "leaf") {
-                    if let seed = record?.request.seed {
-                        app.request.seed = seed
-                        randomSeed = false
-                    }
-                }
-                .help("Use this picture's seed (and stop picking a new one each time)")
                 Button("Use All", systemImage: "arrow.uturn.backward") { if let record { app.restore(record) } }
                     .help("Use all of this picture's settings, including the model")
-                toolbarDivider
-                Button("Use as Start Image", systemImage: "photo.badge.arrow.down") {
-                    if let record { app.useAsStartImage(fileURL(record), for: selectedModel) }
-                }
-                .help("Use as the start image, to change it with a new prompt")
                 Button("Open in Edit", systemImage: "paintbrush.pointed") {
                     if let record { app.openEditor(record) }
                 }
@@ -681,19 +669,13 @@ struct GenerateView: View {
                     .buttonStyle(IconButtonStyle(isSelected: showInfo))
                     .keyboardShortcut("i", modifiers: .command)
                     .help("Show how this picture was made (⌘I)")
-                toolbarDivider
                 Button("Copy", systemImage: "doc.on.doc") { copyShownImage() }
                     .help("Copy the picture")
-                Button("Save…", systemImage: "square.and.arrow.down") { if let record { save(record) } }
-                    .help("Save a copy somewhere else")
                 if let record {
                     ShareLink(item: fileURL(record)) { Label("Share", systemImage: "square.and.arrow.up") }
                         .help("Share")
                 }
-                Button("Show in Finder", systemImage: "folder") {
-                    if let record { NSWorkspace.shared.activateFileViewerSelecting([fileURL(record)]) }
-                }
-                .help("Show in Finder")
+                moreMenu(record)
                 toolbarDivider
                 Button("Move to Trash", systemImage: "trash") { confirmTrash = true }
                     .help("Move to Trash")
@@ -727,6 +709,37 @@ struct GenerateView: View {
 
     private var toolbarDivider: some View {
         Divider().frame(height: 18).padding(.horizontal, 4)
+    }
+
+    /// The less frequent actions on the shown picture.
+    private func moreMenu(_ record: GenerationRecord?) -> some View {
+        Menu {
+            Button("Use Prompt", systemImage: "text.quote") {
+                if let r = record?.request {
+                    app.request.prompt = r.prompt
+                    app.request.negativePrompt = r.negativePrompt
+                }
+            }
+            Button("Use Seed", systemImage: "leaf") {
+                if let seed = record?.request.seed {
+                    app.request.seed = seed
+                    randomSeed = false
+                }
+            }
+            Button("Use as Start Image", systemImage: "photo.badge.arrow.down") {
+                if let record { app.useAsStartImage(fileURL(record), for: selectedModel) }
+            }
+            Divider()
+            Button("Save a Copy…", systemImage: "square.and.arrow.down") { if let record { save(record) } }
+            Button("Show in Finder", systemImage: "folder") {
+                if let record { NSWorkspace.shared.activateFileViewerSelecting([fileURL(record)]) }
+            }
+        } label: {
+            Label("More", systemImage: "ellipsis.circle")
+        }
+        .menuStyle(.button)
+        .menuIndicator(.hidden)
+        .help("More: use the prompt or seed, use as the start image, save a copy, show in Finder")
     }
 
     /// A thin bar under the toolbar showing progress through the steps.
@@ -767,7 +780,9 @@ struct GenerateView: View {
             Text("Getting \(name) ready… The first time can take a few minutes.")
                 .pill()
         case .generating(let step, let total):
-            HStack(spacing: 4) {
+            HStack(spacing: 6) {
+                ProgressRing(fraction: Double(step) / Double(max(total, 1)), lineWidth: 2.5)
+                    .frame(width: 14, height: 14)
                 Text("Step \(step) of \(total)").monospacedDigit()
                 if let eta = generator.etaSeconds, eta >= 1 {
                     Text("· about \(Duration.seconds(eta.rounded()).formatted(.units(allowed: [.minutes, .seconds], width: .abbreviated))) left")
@@ -835,6 +850,129 @@ private extension View {
             .padding(.vertical, 6)
             .background(.ultraThinMaterial, in: Capsule())
             .overlay(Capsule().strokeBorder(Theme.border))
+    }
+}
+
+// MARK: - Progress and empty states
+
+/// Shown in place of the picture while the first one is being made: a ring with the
+/// progress, what's happening and what's being drawn.
+private struct GenerationProgressCard: View {
+    let phase: Generator.Phase
+    let etaSeconds: Double?
+    let prompt: String?
+
+    var body: some View {
+        VStack(spacing: 14) {
+            ZStack {
+                switch phase {
+                case .generating(let step, let total):
+                    ProgressRing(fraction: Double(step) / Double(max(total, 1)), lineWidth: 6)
+                    VStack(spacing: 0) {
+                        Text("\(Int((Double(step) / Double(max(total, 1)) * 100).rounded()))%")
+                            .font(.title2.weight(.semibold).monospacedDigit())
+                        Text("\(step) of \(total)")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                default:
+                    ProgressRing(fraction: nil, lineWidth: 6)
+                    Image(systemName: "sparkles")
+                        .font(.title)
+                        .foregroundStyle(Theme.create)
+                        .symbolEffect(.pulse)
+                }
+            }
+            .frame(width: 92, height: 92)
+
+            VStack(spacing: 4) {
+                Text(title).font(.headline)
+                if let detail {
+                    Text(detail)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+            }
+            if let prompt, !prompt.isEmpty {
+                Text("“\(prompt)”")
+                    .font(.callout.italic())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 320)
+            }
+        }
+        .padding(28)
+        .frame(minWidth: 300)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(Theme.border))
+        .shadow(color: .black.opacity(0.2), radius: 20, y: 8)
+        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+    }
+
+    private var title: String {
+        switch phase {
+        case .loading: "Getting the model ready"
+        case .generating: "Creating your picture"
+        case .idle: ""
+        }
+    }
+
+    private var detail: String? {
+        switch phase {
+        case .loading(let name): "\(name). The first time can take a few minutes."
+        case .generating:
+            etaSeconds.flatMap { $0 >= 1 ? "About \(Duration.seconds($0.rounded()).formatted(.units(allowed: [.minutes, .seconds], width: .wide))) left" : nil }
+        case .idle: nil
+        }
+    }
+}
+
+/// Create's canvas before any picture: what to do next, and the shortcuts for it.
+private struct EmptyCanvas: View {
+    var body: some View {
+        VStack(spacing: 18) {
+            ZStack {
+                Circle()
+                    .fill(RadialGradient(colors: [Theme.create.opacity(0.35), Theme.create.opacity(0)],
+                                         center: .center, startRadius: 4, endRadius: 70))
+                    .frame(width: 140, height: 140)
+                Image(systemName: "sparkles")
+                    .font(.system(size: 44, weight: .light))
+                    .foregroundStyle(LinearGradient(colors: [Theme.create, Theme.create.opacity(0.7)],
+                                                    startPoint: .top, endPoint: .bottom))
+            }
+            VStack(spacing: 6) {
+                Text("Your picture will appear here").font(.title3.weight(.semibold))
+                Text("Describe something on the left, then press Create.")
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 10) {
+                KeyHint(keys: "⌘↩", label: "Create")
+                KeyHint(keys: "⌘E", label: "Add detail")
+                KeyHint(keys: "⌘I", label: "Picture info")
+            }
+        }
+        .padding(32)
+    }
+}
+
+/// A keyboard shortcut and what it does, as a small chip.
+struct KeyHint: View {
+    let keys: String
+    let label: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(keys)
+                .font(.caption.weight(.semibold).monospaced())
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Theme.raised, in: RoundedRectangle(cornerRadius: 5))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Theme.border))
+            Text(label).font(.caption).foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -971,18 +1109,24 @@ private struct Thumbnail: View {
     let record: GenerationRecord
     let isSelected: Bool
     @State private var image: CGImage?
+    @State private var hovering = false
 
     var body: some View {
         ZStack {
             Rectangle().fill(Theme.raised)
             if let image {
                 Image(decorative: image, scale: 1).resizable().scaledToFill()
+                    .transition(.opacity)
             }
         }
         .aspectRatio(1, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(RoundedRectangle(cornerRadius: 6)
-            .strokeBorder(isSelected ? Theme.accent : .clear, lineWidth: 2))
+            .strokeBorder(isSelected ? Theme.accent : hovering ? Theme.border : .clear, lineWidth: 2))
+        .scaleEffect(hovering && !isSelected ? 1.03 : 1)
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .animation(.easeIn(duration: 0.2), value: image == nil)
+        .onHover { hovering = $0 }
         .contentShape(Rectangle())
         .help(record.request.prompt)
         .task(id: record.fileName) {

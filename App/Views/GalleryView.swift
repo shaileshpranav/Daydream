@@ -281,6 +281,7 @@ private struct GalleryCell: View {
     var selecting = false
     var isSelected = false
     @State private var thumbnail: CGImage?
+    @State private var hovering = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -288,10 +289,16 @@ private struct GalleryCell: View {
                 Rectangle().fill(.quaternary)
                 if let thumbnail {
                     Image(decorative: thumbnail, scale: 1).resizable().scaledToFill()
+                        .transition(.opacity)
                 }
             }
             .aspectRatio(1, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            .shadow(color: .black.opacity(hovering ? 0.28 : 0.12), radius: hovering ? 10 : 4, y: hovering ? 5 : 2)
+            .scaleEffect(hovering && !selecting ? 1.02 : 1)
+            .animation(.easeOut(duration: 0.15), value: hovering)
+            .animation(.easeIn(duration: 0.2), value: thumbnail == nil)
+            .onHover { hovering = $0 }
             .overlay {
                 RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(Theme.accent, lineWidth: isSelected ? 3 : 0)

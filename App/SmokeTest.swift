@@ -957,6 +957,8 @@ enum SmokeTest {
             ("create-toggled", { for label in toggles { pressButton(containing: label) } }),
             ("create-toggled-back", { for label in toggles { pressButton(containing: label) } }),
             ("my-pictures", { app.section = .gallery }),
+            ("queue", { app.section = .queue }),
+            ("models", { app.section = .models }),
             ("edit-welcome", { app.section = .edit }),
         ]
         // The Edit section with the newest picture open, on each tool.
