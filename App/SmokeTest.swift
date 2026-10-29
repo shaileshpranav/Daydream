@@ -11,7 +11,7 @@ private extension Int {
 
 /// Headless end-to-end check of download + load + generate, for Debug builds:
 ///
-///   CoreMLImageGen.app/Contents/MacOS/CoreMLImageGen -smokeTest sd15-palettized [-seed 42] [-steps 25]
+///   Daydream.app/Contents/MacOS/Daydream -smokeTest sd15-palettized [-seed 42] [-steps 25]
 ///
 /// Prints timings and the saved PNG path, then exits (status 1 on failure).
 @MainActor

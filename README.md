@@ -1,4 +1,6 @@
-# CoreMLImageGen
+# Daydream
+
+(The Xcode project and target, the bundle id and the data folders are still called CoreMLImageGen.)
 
 A native SwiftUI Mac app that runs text-to-image models locally. It is tuned for an **M1 Pro with 16 GB** of RAM. It has two backends: **Core ML** for Stable Diffusion 1.5/2.1/XL (Neural Engine friendly), and **MLX** for newer quantized models such as Z-Image, FLUX.2, Qwen-Image and MOSS-Image (see [MLX models](#mlx-models-z-image-flux2-qwen-image)).
 
@@ -37,18 +39,23 @@ xcodegen generate
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
   xcodebuild -project CoreMLImageGen.xcodeproj -scheme CoreMLImageGen \
   -destination 'platform=macOS' -derivedDataPath build build
-open build/Build/Products/Debug/CoreMLImageGen.app
+open build/Build/Products/Debug/Daydream.app
 ```
 You can also open `CoreMLImageGen.xcodeproj` in Xcode and press Run. The `.xcodeproj` is generated, so edit `project.yml` instead.
 
+The app icon is `App/AppIcon.icon` (an Icon Composer icon with a daytime look for light mode and a night look for dark mode; macOS adds the shape, shadow and glass). It's drawn by a script, so edit the drawing there and rerun it:
+```bash
+swift tools/icon/make_icon.swift App/AppIcon.icon
+```
+
 Headless end-to-end check (Debug builds only). It downloads the model if needed, generates twice, and prints timings:
 ```bash
-build/Build/Products/Debug/CoreMLImageGen.app/Contents/MacOS/CoreMLImageGen -smokeTest sd15-palettized -seed 42 -steps 25
+build/Build/Products/Debug/Daydream.app/Contents/MacOS/Daydream -smokeTest sd15-palettized -seed 42 -steps 25
 ```
 
 `-livePreviewTest <model id> [-base 512]` turns previews on at step 2 of one picture and off at step 2 of another, and checks each change applies from the next step (passes on Z-Image Turbo and SD 1.5). `-section Settings` (any section name) opens the app on that section. `-snapshots <folder>` saves a PNG of Create (also with its Info, Live Preview and Gallery buttons pressed through accessibility, then pressed back, to check their highlights follow), My Pictures (in select mode, two pictures selected) and each Settings tab there and quits; add `-appearance light` or `-appearance dark` to pick the look. The app draws these itself, so they need no screen-recording permission:
 ```bash
-open -n build/Build/Products/Debug/CoreMLImageGen.app --args -snapshots /tmp/shots -appearance light
+open -n build/Build/Products/Debug/Daydream.app --args -snapshots /tmp/shots -appearance light
 ```
 
 ## Models
@@ -147,7 +154,7 @@ If the chosen engine isn't ready, the button is disabled and its help text says 
 - **Variations and Undo.** Press Enhance again for another variation; it always starts from what *you* wrote. **Undo** restores your original text. Editing the prompt yourself makes that edit the new starting point.
 - About 3–5 s per enhance with Apple Intelligence on this M1 Pro. With MLX, loading the model adds a few seconds to the first enhance. If the model returns a fragment, the enhancer retries once automatically.
 
-Debug check: `…/CoreMLImageGen -enhanceTest "portrait of a knight, Monet Style"` prints the result for SD 1.x, SDXL and MLX models. Add `-promptEnhancerEngine mlx -promptEnhancerModel <id>` or `-promptEnhancerEngine ollama -ollamaModel qwen3.5:9b` to test the other engines; it also lists the MLX models it found.
+Debug check: `…/Daydream -enhanceTest "portrait of a knight, Monet Style"` prints the result for SD 1.x, SDXL and MLX models. Add `-promptEnhancerEngine mlx -promptEnhancerModel <id>` or `-promptEnhancerEngine ollama -ollamaModel qwen3.5:9b` to test the other engines; it also lists the MLX models it found.
 
 ## LoRAs
 Core ML compiles weights into the model, so a LoRA can't be toggled at generation time. It is **fused into the base weights before conversion** instead:

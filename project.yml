@@ -21,13 +21,17 @@ targets:
       - package: StableDiffusion
     settings:
       base:
+        # The app is called Daydream. The bundle id and the data folders keep the old
+        # CoreMLImageGen name so settings, models and pictures carry over.
         PRODUCT_BUNDLE_IDENTIFIER: com.shailesh.CoreMLImageGen
-        PRODUCT_NAME: CoreMLImageGen
+        PRODUCT_NAME: Daydream
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: CoreML Image Gen
+        # App/AppIcon.icon (light and dark); redraw it with tools/icon/make_icon.swift.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_KEY_CFBundleDisplayName: Daydream
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.graphics-design
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGN_STYLE: Manual

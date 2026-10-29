@@ -568,7 +568,7 @@ private struct AboutSettings: View {
                         .resizable()
                         .frame(width: 56, height: 56)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("CoreMLImageGen").font(.title2.weight(.semibold))
+                        Text("Daydream").font(.title2.weight(.semibold))
                         Text("Version \(version)").foregroundStyle(.secondary)
                         caption("Makes pictures on this Mac with Core ML and MLX.")
                     }

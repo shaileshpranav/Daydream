@@ -1,0 +1,46 @@
+{
+  "fill" : {
+    "solid" : "srgb:0.07000,0.07500,0.09000,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "glass" : false,
+          "image-name-specializations" : [
+            {
+              "value" : "sparkles-light.png"
+            },
+            {
+              "appearance" : "dark",
+              "value" : "sparkles-dark.png"
+            }
+          ],
+          "name" : "sparkles"
+        }
+      ]
+    },
+    {
+      "layers" : [
+        {
+          "glass" : false,
+          "image-name-specializations" : [
+            {
+              "value" : "background-light.png"
+            },
+            {
+              "appearance" : "dark",
+              "value" : "background-dark.png"
+            }
+          ],
+          "name" : "background"
+        }
+      ]
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : [
+      "macOS"
+    ]
+  }
+}
