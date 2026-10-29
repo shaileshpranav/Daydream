@@ -1,6 +1,7 @@
 #if DEBUG
 import CoreGraphics
 import Foundation
+import AppKit
 import ImageIO
 
 private extension Int {
@@ -14,7 +15,7 @@ private extension Int {
 /// Prints timings and the saved PNG path, then exits (status 1 on failure).
 @MainActor
 enum SmokeTest {
-    static func runIfRequested(store: ModelStore, generator: Generator, queue: GenerationQueue) {
+    static func runIfRequested(store: ModelStore, generator: Generator, queue: GenerationQueue, app: AppState) {
         let defaults = UserDefaults.standard
         if let id = defaults.string(forKey: "previewTest") {
             Task { exit(await runPreviewTest(id: id, out: defaults.string(forKey: "out"), store: store, generator: generator) ? 0 : 1) }
@@ -46,6 +47,10 @@ enum SmokeTest {
         }
         if defaults.bool(forKey: "mossTest") {
             Task { exit(await runMOSSTest(store: store, generator: generator) ? 0 : 1) }
+            return
+        }
+        if let dir = defaults.string(forKey: "snapshots") {
+            Task { exit(await snapshotSections(into: URL(filePath: dir), app: app) ? 0 : 1) }
             return
         }
         if let idea = defaults.string(forKey: "enhanceTest") {
@@ -549,7 +554,16 @@ enum SmokeTest {
                 return false
             }
         }
-        return true
+        // MLX and Ollama models should now show as loaded, and unloading should clear that.
+        guard PromptEnhancer.engine != .appleIntelligence else { return true }
+        try? await Task.sleep(for: .seconds(0.5))  // the rewriter reports from its own queue
+        let loaded = PromptMemory.shared.loadedName
+        print("[enhance] in memory: \(loaded ?? "nothing") \(loaded != nil ? "✓" : "✗")")
+        await PromptMemory.shared.unload()
+        try? await Task.sleep(for: .seconds(1))
+        let after = PromptMemory.shared.loadedName
+        print("[enhance] after unload: \(after ?? "nothing") \(after == nil ? "✓" : "✗")")
+        return loaded != nil && after == nil
     }
 
     private static func run(id: String, store: ModelStore, generator: Generator, seed: UInt32, steps: Int) async -> Bool {
@@ -610,6 +624,42 @@ enum SmokeTest {
         }
         generator.unloadModel()
         return true
+    }
+
+    /// `-snapshots <dir> [-appearance light]`: saves a PNG of the window on Create, My Pictures
+    /// (in select mode, two pictures selected) and each Settings tab, then quits. The app draws
+    /// them itself, so they need no screen-recording permission.
+    private static func snapshotSections(into dir: URL, app: AppState) async -> Bool {
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let original = UserDefaults.standard.string(forKey: "settingsTab")
+        defer { UserDefaults.standard.set(original, forKey: "settingsTab") }
+        var shots: [(name: String, show: () -> Void)] = [
+            ("create", { app.section = .generate }),
+            ("my-pictures", { app.section = .gallery }),
+        ]
+        for (i, tab) in SettingsTab.allCases.enumerated() {
+            shots.append(("settings-\(i)-\(tab.id)", {
+                app.section = .settings
+                UserDefaults.standard.set(tab.rawValue, forKey: "settingsTab")
+            }))
+        }
+        try? await Task.sleep(for: .seconds(2))
+        var ok = true
+        for shot in shots {
+            shot.show()
+            try? await Task.sleep(for: .seconds(2))  // thumbnails load, the Storage tab measures folders
+            guard let view = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil })?.contentView,
+                  let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+                print("[snapshots] no window"); return false
+            }
+            view.window?.display()
+            view.cacheDisplay(in: view.bounds, to: rep)
+            let url = dir.appending(path: "\(shot.name).png")
+            let saved = (try? rep.representation(using: .png, properties: [:])?.write(to: url)) != nil
+            print("[snapshots] \(shot.name): \(saved ? url.path : "failed")")
+            ok = ok && saved
+        }
+        return ok
     }
 }
 #endif

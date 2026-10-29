@@ -9,6 +9,14 @@ struct GalleryView: View {
     @State private var viewing: Int?
     @State private var search = ""
 
+    /// Multi-select: while `selecting`, a click adds or removes a picture instead of opening it.
+    /// ⌘-click and ⇧-click start selecting too.
+    @State private var selecting = false
+    @State private var selection: Set<String> = []
+    /// Where a ⇧-click range starts: the last picture clicked.
+    @State private var anchor: String?
+    @State private var confirmTrash = false
+
     private let columns = [GridItem(.adaptive(minimum: 180), spacing: 12)]
 
     var body: some View {
@@ -20,7 +28,16 @@ struct GalleryView: View {
             }
         }
         .navigationTitle("My Pictures")
-        .task { records = await ImageSaver.loadRecords() }
+        .task {
+            records = await ImageSaver.loadRecords()
+            #if DEBUG
+            // -snapshots shows select mode with two pictures selected.
+            if UserDefaults.standard.string(forKey: "snapshots") != nil {
+                selecting = true
+                selection = Set(records.prefix(2).map(\.fileName))
+            }
+            #endif
+        }
         .onChange(of: generator.lastRecord) {
             // A new image: add it at the top rather than rescanning the whole folder,
             // keeping the viewer on the image it's showing.
@@ -33,9 +50,16 @@ struct GalleryView: View {
 
     private func trashFromViewer(_ record: GenerationRecord) {
         guard let index = shown.firstIndex(of: record) else { return }
-        ImageSaver.delete(record)
-        records.removeAll { $0 == record }
+        trash([record])
         viewing = shown.isEmpty ? nil : min(index, shown.count - 1)
+    }
+
+    private func trash(_ trashed: [GenerationRecord]) {
+        for record in trashed { ImageSaver.delete(record) }
+        let names = Set(trashed.map(\.fileName))
+        records.removeAll { names.contains($0.fileName) }
+        selection.subtract(names)
+        if selection.isEmpty { selecting = false }
     }
 
     /// The pictures matching the search, newest first.
@@ -47,21 +71,100 @@ struct GalleryView: View {
         }
     }
 
+    /// The selected pictures, in gallery order.
+    private var selected: [GenerationRecord] {
+        records.filter { selection.contains($0.fileName) }
+    }
+
+    private func fileURL(_ record: GenerationRecord) -> URL {
+        ImageSaver.folder.appending(path: record.fileName)
+    }
+
     private var grid: some View {
         VStack(spacing: 0) {
             HeaderBar {
-                Text("My Pictures").font(.headline)
-                Text("\(records.count)").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                SearchField(prompt: "Search prompts and models", text: $search)
-                Button("Open Folder", systemImage: "folder") {
-                    NSWorkspace.shared.open(ImageSaver.folder)
+                if selecting {
+                    selectionBar
+                } else {
+                    Text("My Pictures").font(.headline)
+                    Text("\(records.count)").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    SearchField(prompt: "Search prompts and models", text: $search)
+                    Button("Select") { selecting = true }
+                        .controlSize(.small)
+                        .disabled(records.isEmpty)
+                        .help("Select several pictures (or ⌘-click, ⇧-click)")
+                    Button("Open Folder", systemImage: "folder") {
+                        NSWorkspace.shared.open(ImageSaver.folder)
+                    }
+                    .buttonStyle(IconButtonStyle())
+                    .help("Open the pictures folder in Finder")
                 }
-                .buttonStyle(IconButtonStyle())
-                .help("Open the pictures folder in Finder")
             }
             gridContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .confirmationDialog("Move \(selection.count) picture\(selection.count == 1 ? "" : "s") to the Trash?",
+                            isPresented: $confirmTrash) {
+            Button("Move to Trash", role: .destructive) { trash(selected) }
+        }
+    }
+
+    /// The header while selecting: the count and what can be done with the selection.
+    @ViewBuilder
+    private var selectionBar: some View {
+        let urls = selected.map(fileURL)
+        Text(selection.isEmpty ? "Select pictures" : "\(selection.count) selected").font(.headline)
+        Spacer()
+        Button(selection.count == shown.count ? "Deselect All" : "Select All") {
+            if selection.count == shown.count {
+                selection.removeAll()
+            } else {
+                selection = Set(shown.map(\.fileName))
+            }
+        }
+        .keyboardShortcut("a", modifiers: .command)
+        .controlSize(.small)
+        Group {
+            Button("Copy", systemImage: "doc.on.doc") { copy(urls) }
+                .help("Copy the selected pictures")
+            ShareLink(items: urls) { Label("Share", systemImage: "square.and.arrow.up") }
+                .help("Share the selected pictures")
+            Button("Show in Finder", systemImage: "folder") { NSWorkspace.shared.activateFileViewerSelecting(urls) }
+                .help("Show the selected pictures in Finder")
+            Button("Move to Trash", systemImage: "trash") { confirmTrash = true }
+                .help("Move the selected pictures to the Trash")
+        }
+        .buttonStyle(IconButtonStyle())
+        .disabled(selection.isEmpty)
+        Button("Done") {
+            selecting = false
+            selection.removeAll()
+        }
+        .keyboardShortcut(.cancelAction)
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+    }
+
+    private func copy(_ urls: [URL]) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects(urls as [NSURL])
+    }
+
+    /// A click opens the picture, or while selecting (or with ⌘ or ⇧) changes the selection.
+    private func click(_ record: GenerationRecord, at index: Int) {
+        let flags = NSEvent.modifierFlags
+        if flags.contains(.shift), let anchor, let start = shown.firstIndex(where: { $0.fileName == anchor }) {
+            selecting = true
+            let range = min(start, index)...max(start, index)
+            selection.formUnion(shown[range].map(\.fileName))
+        } else if flags.contains(.command) || selecting {
+            selecting = true
+            if selection.remove(record.fileName) == nil { selection.insert(record.fileName) }
+            anchor = record.fileName
+        } else {
+            anchor = record.fileName
+            viewing = index
         }
     }
 
@@ -83,24 +186,10 @@ struct GalleryView: View {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 12) {
                         ForEach(Array(shown.enumerated()), id: \.element.id) { index, record in
-                            GalleryCell(record: record)
-                                .onTapGesture { viewing = index }
-                                .contextMenu {
-                                    Button("View") { viewing = index }
-                                    Button("Reuse These Settings") { app.restore(record) }
-                                    Button("Edit This Picture") {
-                                        app.useAsStartImage(ImageSaver.folder.appending(path: record.fileName),
-                                                            for: store.model(id: app.selectedModelID))
-                                    }
-                                    Button("Show in Finder") {
-                                        NSWorkspace.shared.activateFileViewerSelecting([ImageSaver.folder.appending(path: record.fileName)])
-                                    }
-                                    Divider()
-                                    Button("Move to Trash", role: .destructive) {
-                                        ImageSaver.delete(record)
-                                        records.removeAll { $0 == record }
-                                    }
-                                }
+                            GalleryCell(record: record, selecting: selecting,
+                                        isSelected: selection.contains(record.fileName))
+                                .onTapGesture { click(record, at: index) }
+                                .contextMenu { menu(for: record, at: index) }
                         }
                     }
                     .padding()
@@ -108,10 +197,40 @@ struct GalleryView: View {
             }
         }
     }
+
+    @ViewBuilder
+    private func menu(for record: GenerationRecord, at index: Int) -> some View {
+        if selection.contains(record.fileName), selection.count > 1 {
+            // Right-clicking one of several selected pictures acts on all of them.
+            let urls = selected.map(fileURL)
+            Button("Copy \(urls.count) Pictures") { copy(urls) }
+            Button("Show \(urls.count) Pictures in Finder") { NSWorkspace.shared.activateFileViewerSelecting(urls) }
+            Divider()
+            Button("Move \(urls.count) Pictures to Trash", role: .destructive) { confirmTrash = true }
+        } else {
+            Button("View") { viewing = index }
+            Button(selection.contains(record.fileName) ? "Deselect" : "Select") {
+                selecting = true
+                if selection.remove(record.fileName) == nil { selection.insert(record.fileName) }
+                anchor = record.fileName
+            }
+            Button("Reuse These Settings") { app.restore(record) }
+            Button("Edit This Picture") {
+                app.useAsStartImage(fileURL(record), for: store.model(id: app.selectedModelID))
+            }
+            Button("Show in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([fileURL(record)])
+            }
+            Divider()
+            Button("Move to Trash", role: .destructive) { trash([record]) }
+        }
+    }
 }
 
 private struct GalleryCell: View {
     let record: GenerationRecord
+    var selecting = false
+    var isSelected = false
     @State private var thumbnail: CGImage?
 
     var body: some View {
@@ -124,6 +243,20 @@ private struct GalleryCell: View {
             }
             .aspectRatio(1, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Theme.accent, lineWidth: isSelected ? 3 : 0)
+            }
+            .overlay(alignment: .topTrailing) {
+                if selecting {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.title2)
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, isSelected ? Theme.accent : Color.black.opacity(0.35))
+                        .shadow(radius: 2)
+                        .padding(8)
+                }
+            }
             Text(record.request.prompt)
                 .font(.caption)
                 .lineLimit(2)
@@ -132,7 +265,8 @@ private struct GalleryCell: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
-        .help("Click to view full size; right-click for more")
+        .contentShape(Rectangle())
+        .help(selecting ? "Click to select or deselect" : "Click to view full size; ⌘-click to select; right-click for more")
         .task(id: record.fileName) {
             let record = record
             thumbnail = await Task.detached { ImageSaver.thumbnail(for: record) }.value

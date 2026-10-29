@@ -9,11 +9,10 @@ struct CoreMLImageGenApp: App {
     @State private var mlxRuntime = MLXRuntime()
     @State private var loraLibrary = LoRALibrary()
     @State private var promptModels = PromptModelStore()
+    @AppStorage(AppearanceChoice.key) private var appearance = AppearanceChoice.dark
 
     init() {
-        // Defaults for settings the backends read directly (not just through @AppStorage).
-        UserDefaults.standard.register(defaults: [StableDiffusionBackend.lowPrecisionKey: true,
-                                                  MLXBackend.stepCacheKey: true])
+        UserDefaults.standard.register(defaults: SettingsDefaults.registered)
         let generator = Generator()
         _generator = State(initialValue: generator)
         _queue = State(initialValue: GenerationQueue(generator: generator))
@@ -28,23 +27,31 @@ struct CoreMLImageGenApp: App {
                 .environment(queue)
                 .environment(mlxRuntime)
                 .environment(loraLibrary)
+                .environment(promptModels)
                 .frame(minWidth: 1040, minHeight: 640)
-                .preferredColorScheme(.dark)
                 .tint(Theme.accent)
+                // Set on the app rather than with preferredColorScheme, which can't go back to
+                // following macOS once set.
+                .onChange(of: appearance, initial: true) { NSApp.appearance = appearance.nsAppearance }
                 #if DEBUG
-                .task { SmokeTest.runIfRequested(store: store, generator: generator, queue: queue) }
+                .task { SmokeTest.runIfRequested(store: store, generator: generator, queue: queue, app: app) }
                 #endif
         }
         // No title bar or toolbar: each section draws its own header bar, so the top of
         // the window stays put when switching sections.
         .windowStyle(.hiddenTitleBar)
-
-        Settings {
-            SettingsView()
-                .environment(generator)
-                .environment(mlxRuntime)
-                .environment(promptModels)
-                .preferredColorScheme(.dark)
+        // Settings is a section of the main window, not a separate window: ⌘, goes there.
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { app.section = .settings }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
+            CommandGroup(before: .toolbar) {
+                Picker("Appearance", selection: $appearance) {
+                    ForEach(AppearanceChoice.allCases) { Text($0.label).tag($0) }
+                }
+                Divider()
+            }
         }
     }
 }
@@ -54,8 +61,12 @@ enum AppSection: String, CaseIterable, Identifiable {
     case gallery = "My Pictures"
     case queue = "Queue"
     case models = "Models"
+    case settings = "Settings"
 
     var id: String { rawValue }
+
+    /// The sections at the top of the side rail (⌥⌘1–⌥⌘4); Settings sits at the bottom.
+    static var main: [AppSection] { allCases.filter { $0 != .settings } }
 
     var icon: String {
         switch self {
@@ -63,6 +74,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .gallery: "photo.on.rectangle"
         case .queue: "list.bullet.rectangle"
         case .models: "shippingbox"
+        case .settings: "gearshape"
         }
     }
 }
@@ -71,7 +83,12 @@ enum AppSection: String, CaseIterable, Identifiable {
 @MainActor
 @Observable
 final class AppState {
+    #if DEBUG
+    /// `-section Settings` opens on that section, for checking a page without clicking to it.
+    var section = AppSection(rawValue: UserDefaults.standard.string(forKey: "section") ?? "") ?? .generate
+    #else
     var section: AppSection = .generate
+    #endif
     var request = GenerationRequest(prompt: "a cozy reading nook by a rainy window, warm lamp light, film photo")
     var selectedModelID: String? = UserDefaults.standard.string(forKey: "selectedModelID") {
         didSet { UserDefaults.standard.set(selectedModelID, forKey: "selectedModelID") }
@@ -90,7 +107,7 @@ final class AppState {
 
     /// True while a debug smoke test drives the app, so it doesn't preload models itself.
     var automationRunning = ["smokeTest", "queueTest", "img2imgTest", "loraTest", "enhanceTest", "preloadTest",
-                             "precisionTest", "managerTest", "previewTest", "mossTest"]
+                             "precisionTest", "managerTest", "previewTest", "mossTest", "snapshots"]
         .contains { UserDefaults.standard.object(forKey: $0) != nil }
 
     var startImageError: String?
@@ -133,6 +150,7 @@ struct RootView: View {
                 case .gallery: GalleryView()
                 case .queue: QueuePage()
                 case .models: ModelManagerView()
+                case .settings: SettingsView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -149,7 +167,7 @@ private struct SideRail: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            ForEach(Array(AppSection.allCases.enumerated()), id: \.element) { index, section in
+            ForEach(Array(AppSection.main.enumerated()), id: \.element) { index, section in
                 Button(section.rawValue, systemImage: section.icon) { app.section = section }
                     .buttonStyle(IconButtonStyle(isSelected: app.section == section, size: 38))
                     .help("\(section.rawValue) (⌥⌘\(index + 1))")
@@ -167,11 +185,9 @@ private struct SideRail: View {
                     }
             }
             Spacer()
-            SettingsLink {
-                Label("Settings", systemImage: "gearshape")
-            }
-            .buttonStyle(IconButtonStyle(size: 38))
-            .help("Settings (⌘,)")
+            Button(AppSection.settings.rawValue, systemImage: AppSection.settings.icon) { app.section = .settings }
+                .buttonStyle(IconButtonStyle(isSelected: app.section == .settings, size: 38))
+                .help("Settings (⌘,)")
         }
         .padding(.vertical, 10)
         .frame(width: 54)

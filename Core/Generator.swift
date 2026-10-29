@@ -24,9 +24,13 @@ final class Generator {
 
     var isBusy: Bool { phase != .idle }
 
+    /// Minutes with nothing to do before the resident model is freed; 0 keeps it loaded.
+    static let idleUnloadKey = "unloadIdleMinutes"
+
     private var backend: ImageBackend?
     private let queue = DispatchQueue(label: "CoreMLImageGen.inference", qos: .userInitiated)
     private let cancelFlag = CancelFlag()
+    private var idleUnload: Task<Void, Never>?
 
     // Loads and generations take turns: a generate that arrives while a preload is
     // running waits for it instead of failing.
@@ -34,6 +38,7 @@ final class Generator {
     private var workWaiters: [CheckedContinuation<Void, Never>] = []
 
     private func acquireWork() async {
+        idleUnload?.cancel()
         if !workLocked {
             workLocked = true
             return
@@ -44,6 +49,7 @@ final class Generator {
     private func releaseWork() {
         if workWaiters.isEmpty {
             workLocked = false
+            restartIdleTimer()
         } else {
             workWaiters.removeFirst().resume()
         }
@@ -59,6 +65,19 @@ final class Generator {
         queue.async { backend.unload() }
         self.backend = nil
         loadedModelID = nil
+    }
+
+    /// Starts the countdown to freeing the model (Settings → Speed & Memory). Called after
+    /// each load or picture, and when the setting changes.
+    func restartIdleTimer() {
+        idleUnload?.cancel()
+        let minutes = UserDefaults.standard.integer(forKey: Self.idleUnloadKey)
+        guard minutes > 0, backend != nil else { return }
+        idleUnload = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(minutes * 60))
+            guard !Task.isCancelled else { return }
+            self?.unloadModel()
+        }
     }
 
     /// Loads `model` ahead of time so the first Generate starts straight away.

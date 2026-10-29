@@ -24,7 +24,8 @@ struct QueuedJob: Identifiable, Equatable {
     let id = UUID()
     let model: InstalledModel
     let request: GenerationRequest
-    let previewEvery: Int
+    /// Fixed preview interval (tests); nil follows the live preview setting when the job starts.
+    let previewEvery: Int?
     var state: State = .pending
 }
 
@@ -48,7 +49,7 @@ final class GenerationQueue {
 
     /// Queues `count` images. With `count > 1` the seeds count up from the request's
     /// seed (42, 43, 44…), so each image differs and any one can be reproduced.
-    func enqueue(model: InstalledModel, request: GenerationRequest, count: Int = 1, previewEvery: Int) {
+    func enqueue(model: InstalledModel, request: GenerationRequest, count: Int = 1, previewEvery: Int? = nil) {
         for i in 0..<max(1, count) {
             var r = request
             r.seed = request.seed &+ UInt32(i)
@@ -100,7 +101,9 @@ final class GenerationQueue {
             jobs[index].state = .running
             updateDockBadge()
             let job = jobs[index]
-            let outcome = await generator.generate(model: job.model, request: job.request, previewEvery: job.previewEvery)
+            // The preview setting is read now, so the toolbar's toggle reaches jobs already waiting.
+            let previewEvery = job.previewEvery ?? UserDefaults.standard.integer(forKey: Self.previewEveryKey)
+            let outcome = await generator.generate(model: job.model, request: job.request, previewEvery: previewEvery)
             // The job may have moved while it ran (others removed/reordered); find it again.
             guard let i = jobs.firstIndex(where: { $0.id == job.id }) else { continue }
             switch outcome {
@@ -116,9 +119,16 @@ final class GenerationQueue {
         }
     }
 
+    static let dockBadgeKey = "dockBadge"
+    /// Steps between live previews; 0 turns them off.
+    static let previewEveryKey = "previewEvery"
+    /// The interval to go back to when previews are turned on again from the toolbar.
+    static let lastPreviewEveryKey = "lastPreviewEvery"
+
     /// Shows how many images are still to come on the Dock icon.
-    private func updateDockBadge() {
-        let remaining = pendingCount + (runningJob == nil ? 0 : 1)
+    func updateDockBadge() {
+        let remaining = UserDefaults.standard.bool(forKey: Self.dockBadgeKey)
+            ? pendingCount + (runningJob == nil ? 0 : 1) : 0
         NSApp?.dockTile.badgeLabel = remaining > 0 ? "\(remaining)" : nil
     }
 }
@@ -126,11 +136,13 @@ final class GenerationQueue {
 /// Tells the user a queue run finished while they were in another app.
 @MainActor
 enum QueueNotifier {
+    static let enabledKey = "notifyQueueFinished"
     private static var authorized = false
+    private static var enabled: Bool { UserDefaults.standard.bool(forKey: enabledKey) }
 
     /// Asks once, the first time a batch is queued.
     static func requestPermissionIfNeeded() {
-        guard !authorized else { return }
+        guard enabled, !authorized else { return }
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
             Task { @MainActor in authorized = granted }
         }
@@ -138,7 +150,7 @@ enum QueueNotifier {
 
     static func queueFinished(images: Int, failed: Int) {
         // Only worth interrupting for when the user isn't looking and it took a while.
-        guard authorized, images + failed > 1, NSApp?.isActive == false else { return }
+        guard enabled, authorized, images + failed > 1, NSApp?.isActive == false else { return }
         let content = UNMutableNotificationContent()
         content.title = "Queue finished"
         content.body = failed == 0

@@ -243,9 +243,18 @@ final class MLXPromptRewriter: @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "MLXPromptRewriter")
     private let worker = MLXWorker()
-    private var loadedID: String?
+    private var loadedID: String? {
+        didSet {
+            guard loadedID != oldValue else { return }
+            let id = loadedID
+            Task { @MainActor in PromptMemory.shared.mlxModelID = id }
+        }
+    }
     private var idleUnload: DispatchWorkItem?
-    private static let idleSeconds = 180.0
+    /// Minutes unused before the language model is freed (Settings → Speed & Memory). Ollama
+    /// is asked to keep its model for the same time.
+    static let idleKey = "promptModelIdleMinutes"
+    static var idleSeconds: Double { Double(max(UserDefaults.standard.integer(forKey: idleKey), 1)) * 60 }
 
     func chat(model: PromptModel, system: String, user: String, temperature: Double) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
@@ -319,5 +328,50 @@ final class MLXPromptRewriter: @unchecked Sendable {
         }
         idleUnload = item
         queue.asyncAfter(deadline: .now() + Self.idleSeconds, execute: item)
+    }
+}
+
+/// Which Add Detail model is holding memory, so Create and Settings can offer to free it:
+/// the MLX rewriter's model, and the Ollama model this app last used (kept for the idle time
+/// the app asks Ollama for). Apple Intelligence's memory is managed by macOS.
+@MainActor
+@Observable
+final class PromptMemory {
+    static let shared = PromptMemory()
+
+    /// Set by MLXPromptRewriter as its worker loads and frees models.
+    fileprivate(set) var mlxModelID: String?
+    private(set) var ollamaModel: String?
+    private var ollamaExpiry: Task<Void, Never>?
+    private(set) var isUnloading = false
+
+    /// The loaded model as shown to the user, e.g. "Qwen3 4B Instruct (MLX)".
+    var loadedName: String? {
+        let names = [mlxModelID.map { "\(PromptModel.named($0).name) (MLX)" }, ollamaModel.map { "\($0) (Ollama)" }]
+        let loaded = names.compactMap { $0 }
+        return loaded.isEmpty ? nil : loaded.joined(separator: " and ")
+    }
+
+    /// Ollama answered with `model`, which it now keeps for `seconds`.
+    func ollamaUsed(_ model: String, for seconds: Double) {
+        ollamaModel = model
+        ollamaExpiry?.cancel()
+        ollamaExpiry = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard !Task.isCancelled else { return }
+            self?.ollamaModel = nil
+        }
+    }
+
+    /// Frees every loaded Add Detail model now.
+    func unload() async {
+        isUnloading = true
+        defer { isUnloading = false }
+        if mlxModelID != nil { MLXPromptRewriter.shared.unload() }  // it reports nil when done
+        if let model = ollamaModel {
+            ollamaExpiry?.cancel()
+            try? await Ollama.unload(model: model)
+            ollamaModel = nil
+        }
     }
 }

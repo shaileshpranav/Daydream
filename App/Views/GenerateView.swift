@@ -9,7 +9,8 @@ struct GenerateView: View {
     @Environment(GenerationQueue.self) private var queue
     @Environment(LoRALibrary.self) private var library
     @State private var fastModeError: String?
-    @AppStorage("previewEvery") private var previewEvery = 5
+    @AppStorage(GenerationQueue.previewEveryKey) private var previewEvery = 5
+    @AppStorage(GenerationQueue.lastPreviewEveryKey) private var lastPreviewEvery = 5
     @AppStorage("batchCount") private var batchCount = 1
     @AppStorage("randomSeed") private var randomSeed = true
     @AppStorage("preloadModels") private var preloadModels = true
@@ -149,7 +150,7 @@ struct GenerateView: View {
                     guard let model = selectedModel else { return }
                     // The seed field shows the seed actually used, so it can be kept or reused.
                     if randomSeed { app.request.randomizeSeed() }
-                    queue.enqueue(model: model, request: app.request, count: batchCount, previewEvery: previewEvery)
+                    queue.enqueue(model: model, request: app.request, count: batchCount)
                 } label: {
                     Label(createTitle, systemImage: queue.isRunning ? "text.badge.plus" : "wand.and.stars")
                 }
@@ -230,6 +231,16 @@ struct GenerateView: View {
                         }
                         beforeEnhance = nil
                     }
+                }
+
+                if let loaded = PromptMemory.shared.loadedName {
+                    Spacer()
+                    Button("Unload Add Detail Model", systemImage: "eject") {
+                        Task { await PromptMemory.shared.unload() }
+                    }
+                    .labelStyle(.iconOnly)
+                    .disabled(enhancing || PromptMemory.shared.isUnloading)
+                    .help("\(loaded) is in memory. Click to free it now")
                 }
             }
             .controlSize(.small)
@@ -539,8 +550,13 @@ struct GenerateView: View {
         return latest
     }
 
+    /// The live preview, unless previews were turned off while this picture was being made.
+    private var preview: CGImage? {
+        previewEvery > 0 ? generator.preview : nil
+    }
+
     private var shownImage: CGImage? {
-        if let preview = generator.preview { return preview }
+        if let preview { return preview }
         if app.viewedRecord != nil { return viewedImage }
         return shownRecord == nil ? nil : generator.lastImage
     }
@@ -557,7 +573,7 @@ struct GenerateView: View {
                         return NSItemProvider(contentsOf: fileURL(record)) ?? NSItemProvider()
                     }
                     .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
-                    .opacity(generator.preview != nil ? 0.8 : 1)
+                    .opacity(preview != nil ? 0.8 : 1)
                 } else if generator.phase != .idle {
                     ProgressView().controlSize(.large)
                 } else {
@@ -566,7 +582,7 @@ struct GenerateView: View {
                 }
             }
             .overlay(alignment: .topLeading) {
-                if showInfo, let record = shownRecord, generator.preview == nil {
+                if showInfo, let record = shownRecord, preview == nil {
                     InfoOverlay(record: record, image: shownImage, isMLX: store.model(id: record.modelID)?.kind == .mlx)
                         .padding(14)
                 }
@@ -652,8 +668,21 @@ struct GenerateView: View {
                     .help("Move to Trash")
             }
             .buttonStyle(IconButtonStyle())
-            .disabled(record == nil || generator.preview != nil)
+            .disabled(record == nil || preview != nil)
             Spacer(minLength: 0)
+            Button(previewEvery > 0 ? "Turn Off Live Preview" : "Turn On Live Preview",
+                   systemImage: previewEvery > 0 ? "eye" : "eye.slash") {
+                if previewEvery > 0 {
+                    lastPreviewEvery = previewEvery
+                    previewEvery = 0
+                } else {
+                    previewEvery = max(lastPreviewEvery, 1)
+                }
+            }
+            .buttonStyle(IconButtonStyle(isSelected: previewEvery > 0))
+            .help(previewEvery > 0
+                  ? "Live preview is on (every \(previewEvery) steps). Click to turn it off: pictures finish a little faster"
+                  : "Live preview is off. Click to watch the picture form (from the next picture)")
             Button(showGallery ? "Hide Gallery" : "Show Gallery", systemImage: "sidebar.right") {
                 withAnimation { showGallery.toggle() }
             }

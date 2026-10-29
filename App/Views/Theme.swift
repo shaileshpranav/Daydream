@@ -1,14 +1,53 @@
 import SwiftUI
 
-/// A dark, panel-based look inspired by InvokeAI: a near-black base, slightly lighter
-/// panels, blue accents and a gold Create button.
+/// A panel-based look inspired by InvokeAI: a near-black base (light grey in light mode),
+/// slightly lighter panels, blue accents and a gold Create button.
 enum Theme {
-    static let base = Color(red: 0.067, green: 0.071, blue: 0.078)
-    static let panel = Color(red: 0.106, green: 0.110, blue: 0.122)
-    static let raised = Color(red: 0.157, green: 0.165, blue: 0.180)
-    static let border = Color.white.opacity(0.07)
-    static let accent = Color(red: 0.33, green: 0.62, blue: 0.96)
-    static let create = Color(red: 0.96, green: 0.78, blue: 0.26)
+    static let base = adaptive(light: (0.925, 0.930, 0.940), dark: (0.067, 0.071, 0.078))
+    static let panel = adaptive(light: (0.965, 0.968, 0.975), dark: (0.106, 0.110, 0.122))
+    static let raised = adaptive(light: (0.875, 0.882, 0.898), dark: (0.157, 0.165, 0.180))
+    static let border = Color(nsColor: NSColor(name: nil) { appearance in
+        isDark(appearance) ? NSColor.white.withAlphaComponent(0.07) : NSColor.black.withAlphaComponent(0.09)
+    })
+    static let accent = adaptive(light: (0.10, 0.45, 0.88), dark: (0.33, 0.62, 0.96))
+    static let create = adaptive(light: (0.95, 0.72, 0.15), dark: (0.96, 0.78, 0.26))
+
+    /// A colour that follows the window's light or dark appearance.
+    private static func adaptive(light: (Double, Double, Double), dark: (Double, Double, Double)) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let c = isDark(appearance) ? dark : light
+            return NSColor(srgbRed: c.0, green: c.1, blue: c.2, alpha: 1)
+        })
+    }
+
+    private static func isDark(_ appearance: NSAppearance) -> Bool {
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+}
+
+/// Light, dark, or following macOS (Settings → General, and View → Appearance).
+enum AppearanceChoice: String, CaseIterable, Identifiable {
+    case system, light, dark
+
+    static let key = "appearance"
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .system: "Match System"
+        case .light: "Light"
+        case .dark: "Dark"
+        }
+    }
+
+    /// Applied to the whole app (windows, menus, sheets); nil follows macOS.
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .system: nil
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
+        }
+    }
 }
 
 /// The header of a collapsible settings group: a chevron, a title and, when collapsed,

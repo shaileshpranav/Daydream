@@ -59,7 +59,7 @@ struct PromptEnhancerSettings: View {
             Text(error).font(.caption).foregroundStyle(.red)
         }
         if runtime.status != .installed { runtimeRow }
-        caption("Runs the model on the GPU with MLX. It loads when you press Add Detail and frees its memory after 3 minutes unused. Any mlx-lm chat model works: search Hugging Face for mlx-community and a 4-bit model under about 4 GB. MLX language models already in your Hugging Face cache are listed without downloading again.")
+        caption("Runs the model on the GPU with MLX. It loads when you press Add Detail and frees its memory when unused for the time set under Speed & Memory (3 minutes at first). Any mlx-lm chat model works: search Hugging Face for mlx-community and a 4-bit model under about 4 GB. MLX language models already in your Hugging Face cache are listed without downloading again.")
     }
 
     @ViewBuilder

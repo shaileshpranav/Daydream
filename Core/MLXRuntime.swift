@@ -44,6 +44,22 @@ final class MLXRuntime {
         }
     }
 
+    /// Installs the pinned packages again into the existing environment, e.g. to repair one
+    /// that was changed by hand.
+    func reinstall() {
+        if case .installing = status { return }
+        try? FileManager.default.removeItem(at: Self.marker)
+        startInstall()
+    }
+
+    /// Moves the whole environment (and the worker log) to the Trash to free its disk space.
+    /// The caller stops the workers first; MLX models need it installed again to run.
+    func moveToTrash() throws {
+        if case .installing = status { return }
+        try FileManager.default.trashItem(at: Self.root, resultingItemURL: nil)
+        status = .notInstalled
+    }
+
     private func startInstall() {
         status = .installing("Finding Python 3.11+…")
         Task.detached {

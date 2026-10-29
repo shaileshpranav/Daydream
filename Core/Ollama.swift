@@ -43,8 +43,10 @@ enum Ollama {
             // A rewrite needs little context, and a small one keeps the model's memory down
             // (a server-wide 64K default can crash a 16 GB Mac loading an 8B model).
             "options": ["temperature": temperature, "num_ctx": 2048],
+            // Free the model after the same idle time as an MLX one (Settings → Speed & Memory).
+            "keep_alive": "\(Int(MLXPromptRewriter.idleSeconds))s",
         ]
-        var (data, response) = try await post(body)
+        var (data, response) = try await post("api/chat", body)
         // Ollama builds the schema's grammar on the chat template's assistant marker. For a
         // model whose template doesn't match its tokenizer (e.g. a Mistral fine-tune with a
         // ChatML template) that fails with "Failed to initialize samplers". The instructions
@@ -52,7 +54,7 @@ enum Ollama {
         if (response as? HTTPURLResponse)?.statusCode != 200,
            String(decoding: data, as: UTF8.self).localizedCaseInsensitiveContains("initialize samplers") {
             body["format"] = nil
-            (data, response) = try await post(body)
+            (data, response) = try await post("api/chat", body)
         }
         try check(response, data)
         struct Reply: Decodable {
@@ -62,8 +64,14 @@ enum Ollama {
         return try JSONDecoder().decode(Reply.self, from: data).message.content
     }
 
-    private static func post(_ body: [String: Any]) async throws -> (Data, URLResponse) {
-        var request = URLRequest(url: baseURL.appending(path: "api/chat"), timeoutInterval: 300)  // includes loading the model
+    /// Asks Ollama to free `model`'s memory now instead of after its keep-alive time.
+    static func unload(model: String) async throws {
+        let (data, response) = try await post("api/generate", ["model": model, "keep_alive": 0])
+        try check(response, data)
+    }
+
+    private static func post(_ path: String, _ body: [String: Any]) async throws -> (Data, URLResponse) {
+        var request = URLRequest(url: baseURL.appending(path: path), timeoutInterval: 300)  // includes loading the model
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)

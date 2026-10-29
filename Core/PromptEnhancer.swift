@@ -105,7 +105,9 @@ enum PromptEnhancer {
         case .ollama:
             let model = Ollama.model
             result = try await ChatEnhancer.enhance(prompt: prompt, negativePrompt: negativePrompt, kind: kind, loras: loras) {
-                try await Ollama.chat(model: model, system: $0, user: $1, temperature: 0.7, schema: ChatEnhancer.schema)
+                let reply = try await Ollama.chat(model: model, system: $0, user: $1, temperature: 0.7, schema: ChatEnhancer.schema)
+                await PromptMemory.shared.ollamaUsed(model, for: MLXPromptRewriter.idleSeconds)
+                return reply
             }
         case .appleIntelligence:
             #if canImport(FoundationModels)

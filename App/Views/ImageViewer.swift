@@ -25,7 +25,7 @@ struct ImageViewer: View {
                 HSplitView {
                     imageArea(record)
                         .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
-                        .background(Color.black.opacity(0.85))
+                        .background(Theme.base)
                     InfoPanel(record: record, image: image, confirmTrash: $confirmTrash)
                         .frame(minWidth: 260, idealWidth: 300, maxWidth: 380)
                 }
