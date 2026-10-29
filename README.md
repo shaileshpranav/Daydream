@@ -2,12 +2,13 @@
 
 A native SwiftUI Mac app that runs text-to-image models locally. It is tuned for an **M1 Pro with 16 GB** of RAM. It has two backends: **Core ML** for Stable Diffusion 1.5/2.1/XL (Neural Engine friendly), and **MLX** for newer quantized models such as Z-Image, FLUX.2, Qwen-Image and MOSS-Image (see [MLX models](#mlx-models-z-image-flux2-qwen-image)).
 
-- **Layout** (inspired by InvokeAI): a dark theme (or light, or matching macOS: Settings → General or View → Appearance) with an icon rail on the left for Create, My Pictures, Queue and Models (⌥⌘1–⌥⌘4) and Settings. There's no window toolbar: every section has the same header bar along its top. Create has three panels: settings on the left, the image in the middle and a gallery strip on the right (toggle it with the button at the right end of the image toolbar). The eye button next to it turns the live preview off and on; turning it off hides the preview at once, and the change reaches every picture that starts after it, including ones already queued.
+- **Layout** (inspired by InvokeAI): a dark theme (or light, or matching macOS: Settings → General or View → Appearance) with an icon rail on the left for Create, My Pictures, Queue and Models (⌥⌘1–⌥⌘4) and Settings. There's no window toolbar: every section has the same header bar along its top. Create has three panels: settings on the left, the image in the middle and a gallery strip on the right (toggle it with the button at the right end of the image toolbar). The eye button next to it turns the live preview off and on; the change reaches the picture being made from its next step (Core ML reads it every step; the MLX worker reads it from stdin on its own thread) and every picture after it, including ones already queued.
 - **Create**: the gold **Create** button, how many pictures (×N) and Stop (Esc) stay pinned at the top of the left panel. Below them are the **Prompt** (with things to avoid, **Surprise Me**, **Add Detail** and one-click **Style** chips that add visible text to the prompt), then collapsible **Generation** (model, Quality Quick / Standard / Extra Detail = 0.6×, 1× and 1.5× the recommended steps, steps, guidance, scheduler), **Image** (shape and seed), **Start Image** and **LoRAs** sections, each showing a summary when collapsed. Above the image is a toolbar: use prompt, use seed, use all settings, edit this picture, info (⌘I, how it was made), copy, save, share, show in Finder and trash; a thin bar under it shows progress. Zoom the image with the controls in its top-right corner, ⌘0 (fit), ⌘1 (actual size), ⌘+ and ⌘−, a pinch, or a double-click; scroll to move around. Click a gallery thumbnail to view it. With no model installed, Create shows a welcome screen with one button that downloads the recommended starter model. Every image is saved automatically.
 - **Queue**: ⌘↩ adds the current settings as a job; the button says **Add to Queue** while something is running. **×N** queues a batch with consecutive seeds (42, 43, 44…), so any one can be reproduced. The **Queue** section (its rail icon shows how many are left) shows each job's progress and lets you reorder or remove waiting jobs, cancel the running one, cancel everything, clear finished jobs, and reuse a finished job's settings. Jobs run one at a time on the single resident model; consecutive jobs on the same model reuse it without reloading. Each job captures its settings when queued, so editing the prompt doesn't change jobs already waiting.
 - **Image-to-image**: in the **Start Image** section, drop an image or choose one, or pick **Use as Start Image** from a gallery image's menu or a finished queue job. **How much to change it** (0.05–1, "A little" to "A lot") sets how much to redraw: low keeps the composition and details, high mostly follows the prompt. It works on every model except MOSS-Image, whose mflux port has no image-to-image (its Start Image section says so and offers to remove a leftover start image). Core ML models scale and centre-crop the start image to their fixed size; MLX models switch to the aspect closest to the image. The start image is copied into `Application Support/CoreMLImageGen/StartImages`, so queued jobs and saved settings keep working if the original moves.
+- **Upscaling**: 2× or 4× with Real-ESRGAN from Create, the viewer or My Pictures. See [Upscaling](#upscaling).
 - **Prompt enhancer** (⌘E): turns a short idea into a detailed prompt and negative prompt on device, with Apple Intelligence, a local MLX language model, or Ollama. See [Prompt enhancer](#prompt-enhancer).
-- **My Pictures** (was Gallery): every image in `~/Pictures/CoreMLImageGen`, searchable by description. **Select** (or ⌘-click, or ⇧-click for a range) picks several pictures to copy, share, show in Finder or move to the Trash together; ⌘A selects all and Esc finishes. Right-clicking one of several selected pictures acts on all of them. Click one to open it full size:
+- **My Pictures** (was Gallery): every image in `~/Pictures/CoreMLImageGen`, searchable by description. **Select** (or ⌘-click, or ⇧-click for a range) picks several pictures to copy (as images and as files, so they paste into Messages or an editor as well as Finder), share, show in Finder or move to the Trash together; ⌘A selects all and Esc finishes. Right-clicking one of several selected pictures acts on all of them. A picture that can't be moved to the Trash stays in the list, and an alert says why. Click one to open it full size:
   - Fit or actual size: double-click, pinch, or ⌘0, ⌘1, ⌘+ and ⌘−.
   - **←** and **→** move through the gallery, and **Esc** goes back.
   - A side panel shows how it was made: prompt, model, seed, steps, guidance, size, LoRAs, start image and time.
@@ -15,7 +16,7 @@ A native SwiftUI Mac app that runs text-to-image models locally. It is tuned for
 - **Model manager**: models, LoRAs and installing new ones. See [Model manager](#model-manager).
 - **Settings** (⌘, or the gear at the bottom of the rail) is a section of the main window with six tabs along its header:
   - **General**: appearance (Match System, Light or Dark), preloading, the Create screen's seed, gallery and info defaults, batch notifications, the Dock badge, and Reset All Settings.
-  - **Speed & Memory**: Faster GPU maths, step reuse, live preview, the model in memory, freeing the picture model after 5–60 minutes unused (off by default), how long an Add Detail model stays loaded (3 minutes by default; Ollama is asked to keep its model for the same time), the Add Detail model in memory with an Unload button, and Free All Memory.
+  - **Speed & Memory**: Faster GPU maths, step reuse, live preview, the model in memory, freeing the picture model after 5–60 minutes unused (off by default; it then stays freed, even when you go back to Create, until you create a picture or pick another model), how long an Add Detail model stays loaded (3 minutes by default; Ollama is asked to keep its model for the same time), the Add Detail model in memory with an Unload button, and Free All Memory.
   - **Add Detail**: the prompt enhancer engine and its model, and an Unload button for the model in memory (see [Prompt enhancer](#prompt-enhancer)). While one is loaded, an eject button next to Add Detail in Create frees it too.
   - **Storage**: each folder the app keeps files in (pictures, start images, models, LoRAs, Add Detail models, MLX runtime) with its size and a Finder button, and the free disk space.
   - **MLX Runtime**: install, update or reinstall its packages, the worker log, the families it runs, and moving it to the Trash.
@@ -45,7 +46,7 @@ Headless end-to-end check (Debug builds only). It downloads the model if needed,
 build/Build/Products/Debug/CoreMLImageGen.app/Contents/MacOS/CoreMLImageGen -smokeTest sd15-palettized -seed 42 -steps 25
 ```
 
-`-section Settings` (any section name) opens the app on that section. `-snapshots <folder>` saves a PNG of Create, My Pictures (in select mode, two pictures selected) and each Settings tab there and quits; add `-appearance light` or `-appearance dark` to pick the look. The app draws these itself, so they need no screen-recording permission:
+`-livePreviewTest <model id> [-base 512]` turns previews on at step 2 of one picture and off at step 2 of another, and checks each change applies from the next step (passes on Z-Image Turbo and SD 1.5). `-section Settings` (any section name) opens the app on that section. `-snapshots <folder>` saves a PNG of Create (also with its Info, Live Preview and Gallery buttons pressed through accessibility, then pressed back, to check their highlights follow), My Pictures (in select mode, two pictures selected) and each Settings tab there and quits; add `-appearance light` or `-appearance dark` to pick the look. The app draws these itself, so they need no screen-recording permission:
 ```bash
 open -n build/Build/Products/Debug/CoreMLImageGen.app --args -snapshots /tmp/shots -appearance light
 ```
@@ -62,10 +63,10 @@ open -n build/Build/Products/Debug/CoreMLImageGen.app --args -snapshots /tmp/sho
 | `mlx-z-image-turbo-q4` | Z-Image Turbo, 4-bit (MLX) | 5.9 GB | GPU, float16 | ✅ needs MLX runtime |
 | `mlx-qwen-image-2.1-turbo-q4` | Qwen-Image 2.1 Turbo, 4-bit (MLX) | 10 GB | GPU, float16 | ✅ needs MLX runtime; tight on 16 GB |
 | `mlx-moss-image-sft-q4` | MOSS-Image SFT, 4-bit (MLX) | 7.5 GB | GPU, weights' precision | ✅ needs MLX runtime; tight on 16 GB (11.7–12.9 GB peak), see [MOSS-Image](#moss-image) |
-| `mlx-iris-3b-turbo-q4` | Iris-3B Turbo, 4-bit (MLX) | 5.1 GB | GPU, weights' precision | ⚠️ not yet run on this Mac, see [Newer mflux models](#newer-mflux-models) |
-| `mlx-anima-turbo-q4` | Anima Turbo, 4-bit (MLX) | 3.1 GB | GPU, float16 | ⚠️ not yet run on this Mac; non-commercial license |
-| `mlx-flux3-klein-q4` | FLUX 3 Klein, 4-bit (MLX) | 5.3 GB | GPU, float16 | ⚠️ not yet run on this Mac; FLUX Kommunity license |
-| `mlx-ernie-image-turbo-q4` | ERNIE-Image Turbo, 4-bit (MLX) | 6.6 GB | GPU, weights' precision | ⚠️ not yet run on this Mac |
+| `mlx-iris-3b-turbo-q4` | Iris-3B Turbo, 4-bit (MLX) | 5.1 GB | GPU, weights' precision | ⚠️ runs, but its test fox had an extra tail and legs; see [Newer mflux models](#newer-mflux-models) |
+| `mlx-anima-turbo-q4` | Anima Turbo, 4-bit (MLX) | 3.1 GB | GPU, float16 | ✅ tight on 16 GB (11.0 GB peak); non-commercial license |
+| `mlx-flux3-klein-q4` | FLUX 3 Klein, 4-bit (MLX) | 5.3 GB | GPU, float16 | ✅ FLUX Kommunity license |
+| `mlx-ernie-image-turbo-q4` | ERNIE-Image Turbo, 4-bit (MLX) | 6.6 GB | GPU, weights' precision | ✅ |
 
 Models are stored in `~/Library/Application Support/CoreMLImageGen/Models/<id>/`, each with a `model.json`. The catalog lives in `Core/catalog.json`. Adding an SD or SDXL repo there needs no code changes.
 
@@ -79,7 +80,12 @@ The **first load** of a model compiles it for this Mac's Neural Engine or GPU, w
 | Z-Image Turbo, 4-bit (MLX) | 9 | ~11 s | **170 s** at 1024×1024 | About 18 s per step |
 | FLUX.2 Klein 4B, 4-bit (MLX) | 4 | ~6 s (no compile step) | **82 s** at 1024×1024 | About 16 s per step plus text encoding and decode. Same seed gives identical pixels. Smaller aspect sizes are proportionally faster |
 | MOSS-Image SFT, 4-bit (MLX), Fast mode | 8, guidance 1 | ~10 s | **100 s** at 768×768 (105 s for the first) | Peak MLX memory 12.9 GB (the LoRA stays as separate layers). Clean text on the sign |
-| MOSS-Image SFT, 4-bit (MLX) | 50, guidance 3, step reuse on | – | **869 s** (14.5 min) at 768×768 | Peak 11.7 GB. With step reuse off, same seed: PSNR 27.1 dB against it, and side by side the two look the same (same layout, same lettering; small differences in snow and branches). The step-reuse-off run's time (4,566 s) isn't usable: other heavy work was running at the same time and the Mac swapped (3.5 GB of swap in use afterwards) |
+| MOSS-Image SFT, 4-bit (MLX) | 50, guidance 3, step reuse on | – | **869 s** (14.5 min) at 768×768 | Peak 11.7 GB. With step reuse off, same seed: PSNR 27.1 dB against it, and side by side the two look the same (same layout, same lettering; small differences in snow and branches). At 768 px the Mac swapped on every off/on comparison, so the saving is measured at 512 px (next row) |
+| MOSS-Image SFT, 4-bit (MLX), 512 px | 30, guidance 3 | – | **240 s** step reuse on, **296.5 s** off | Step reuse saves **19%** (21% on the first, colder run). Same seed: PSNR 31.3 dB. Peak 10.2 GB both ways. 8–10 GB of other apps' swap was in use, so both times are slower than an idle Mac would give; the two ran back to back under the same conditions |
+| Anima Turbo, 4-bit (MLX) | 10 | ~6 s | **75 s** at 1024×1024 | Peak 11.0 GB with tiled decoding (18.7 GB before it, decoding in one pass). Tiled against one-pass, same seed: PSNR 46.4 dB, no seam lines |
+| Iris-3B Turbo, 4-bit (MLX) | 4 | ~5 s | **46 s** at 1024×1024 | Peak 6.5 GB. The test fox came out with an extra tail and legs; this is the model at 4 steps, not a decode problem (Iris has no VAE) |
+| FLUX 3 Klein, 4-bit (MLX) | 16 | ~5 s | **147 s** at 768×768 | Peak 6.0 GB, a clean picture. With that much headroom, 1024 px is worth trying |
+| ERNIE-Image Turbo, 4-bit (MLX) | 8 | ~9 s | **320 s** at 1024×1024 | Peak 8.1 GB, the most photographic of the four |
 
 The download speed of the Hugging Face models depends on your connection; 1.6 GB took about 29 minutes here.
 
@@ -112,6 +118,15 @@ The first run creates a Python 3.11 venv in `tools/convert/.venv` and installs A
 - SD 1.x/2.x use `SPLIT_EINSUM_V2` attention, which suits the Neural Engine. SDXL uses `ORIGINAL`, which suits the GPU.
 - RAM during conversion: SD 1.5 converts comfortably on 16 GB. SDXL swaps heavily and can take about an hour, so close other apps first.
 - Gated or private repos need `huggingface-cli login` inside the venv first.
+
+## Upscaling
+
+**Upscale** makes a bigger, sharper copy of a picture, 2× or 4×, with [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) x4plus (BSD-3-Clause) on the GPU and Neural Engine. It's on Create's toolbar, in the full-size viewer, and in My Pictures' right-click menu and selection bar (several pictures are upscaled one after another). Progress, with a Stop button, shows in Create's toolbar and the My Pictures header.
+
+- **The model** is [john-rocky's Core ML conversion](https://huggingface.co/mlboydaisuke/Real-ESRGAN-x4-CoreML) (512×512 tiles in, 2048×2048 out). The first upscale downloads it (67 MB), checks its SHA-256 against the file this was built with (a changed upload is refused, not run), and compiles it into `Application Support/CoreMLImageGen/Upscalers` (listed under Settings → Storage).
+- **Tiles:** pictures of any size go through in overlapping 512 px tiles; 32 px at each inner tile edge is dropped, so there are no seams. 4× is the model's own output; 2× is that scaled down with Lanczos, sharper than enlarging 2× directly.
+- **The result** is saved as a new picture next to the original (`…-42-4x.png`) with the original's settings, so **Use These Settings** remakes the original. The info panels add **Upscaled: 4× with Real-ESRGAN x4plus, N s**. Results are capped at 8192 px on the long side (a 2048 px picture can still go 4×); the menu says which pictures are too large.
+- **Measured here:** 1024 px → 2048 px in 9.7 s, → 4096 px in 9.2 s; 768 px → 3072 px in 4.3 s. Loading the model takes under a second, and saving a 3072 px PNG 0.7 s. Colour is unchanged (mean within 1 level per channel), and close-ups across tile boundaries show no seams. `-upscaleTest <file name | latest> [-out <folder>]` (Debug builds) checks the tile layout for 8 sizes, upscales 2× and 4×, and writes close-ups across a tile boundary next to a Lanczos enlargement.
 
 ## Prompt enhancer
 **Enhance** (⌘E, under the prompt) rewrites your idea on device. Nothing leaves the Mac. **Settings → Add Detail** picks the engine:
@@ -199,15 +214,16 @@ mflux 0.24 also ships these, and they fit a 16 GB Mac at 4-bit. Settings come fr
 | ERNIE-Image Turbo / base (Baidu, 8B) | 6.6 GB | 8 steps / 50 steps, guidance 4 | yes | yes | no | Apache 2.0 |
 
 - **Distilled variants** (FLUX 3 Klein, Iris, Anima Turbo, ERNIE Turbo) ignore guidance and the negative prompt, so that field hides. mflux rejects any guidance but 1 on ERNIE-Image Turbo.
-- **FLUX 3 Klein starts at 768 px.** mflux's published 1024 px peak (18.5 GB at 4-bit) predates its lower-memory VAE decode, and no newer figure was given. Raise the base size in the model manager if it runs comfortably.
+- **FLUX 3 Klein starts at 768 px.** mflux's published 1024 px peak (18.5 GB at 4-bit) predates its lower-memory VAE decode. Here it peaked at 6.0 GB at 768 px, so raising the base size to 1024 in the model manager should fit; that hasn't been run yet.
+- **Tiled decoding:** the worker decodes the finished picture in tiles (8 per side, 512 px, 8 px overlap) wherever mflux says tiling costs nothing visually, which is every decoder but FLUX.2's. It matters for the Qwen-Image VAE: Anima Turbo at 1024 px went from an 18.7 GB peak to 11.0 GB, with PSNR 46.4 dB against the one-pass picture and no seams. Z-Image's pictures came out pixel-identical either way. `-mlxUntiledDecode YES` (Debug builds) decodes in one pass, to compare.
 - **No live preview** for these four yet: their latent layouts and decoders aren't mapped in the worker (Iris has no VAE at all).
 - **Iris-3B takes no LoRAs** in mflux, so its LoRA section hides and switching to it clears LoRAs.
 - **Left out:** FLUX 3 Klein base and Iris-3B base (undistilled research checkpoints, 50 and 100 steps with CFG). FIBO 2 is left out because it is trained on JSON captions and mflux measured about 220 s per image on an M5 Max. Krea 2 (15.8 GB at 4-bit), Ideogram 4 (11.6 GB at 3-bit) and Ming-Image (16.5 GB at 5-bit) are too big for 16 GB. Boogu (10B) and Lens (20B text encoder) are too.
 - **How the worker loads them:** `FAMILIES` in `mlx_worker.py` maps each family to its mflux class and config. Options (LoRAs, float16, negative prompt, start image, step reuse) are passed only when that class's signature takes them, so a new family needs only a table row and an `MLXFamilies.all` entry.
 
-**Not yet verified here:** none of these four families has made a picture on this Mac. The worker's table was checked against the installed mflux: every family resolves to its class and config, and the options are filtered as expected.
+**Verified here:** each of the four made two pictures with the same prompt and seed (`-smokeTest <catalog id>`); times and peaks are in the table above. Their aesthetic and base variants haven't been run.
 
-**Verified here (MOSS-Image):** `-mossTest YES -full YES` (Debug builds) installs the 4-bit model and the Fast mode LoRA if needed, then makes two Fast mode pictures and two 50-step pictures (step reuse on and off), printing time and peak MLX memory; results are in the timing table above. Not yet verified: live preview with real weights (the test runs with previews off), and how much step reuse saves, since its comparison run was slowed by swapping.
+**Verified here (MOSS-Image):** `-mossTest YES -full YES` (Debug builds) installs the 4-bit model and the Fast mode LoRA if needed, then makes two Fast mode pictures and two 50-step pictures (step reuse on and off), printing time and peak MLX memory; results are in the timing table above. Live preview with the real weights passes `-livePreviewTest mlx-moss-image-sft-q4 -base 512 -steps 10`.
 
 `Backends.make(for:)` in `Core/ImageBackend.swift` is where a backend is chosen.
 

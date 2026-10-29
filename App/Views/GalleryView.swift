@@ -4,6 +4,7 @@ struct GalleryView: View {
     @Environment(AppState.self) private var app
     @Environment(Generator.self) private var generator
     @Environment(ModelStore.self) private var store
+    @Environment(Upscaler.self) private var upscaler
     @State private var records: [GenerationRecord] = []
     /// The image open in the full-size viewer, as an index into `records`.
     @State private var viewing: Int?
@@ -16,6 +17,7 @@ struct GalleryView: View {
     /// Where a ⇧-click range starts: the last picture clicked.
     @State private var anchor: String?
     @State private var confirmTrash = false
+    @State private var trashError: String?
 
     private let columns = [GridItem(.adaptive(minimum: 180), spacing: 12)]
 
@@ -28,6 +30,13 @@ struct GalleryView: View {
             }
         }
         .navigationTitle("My Pictures")
+        .alert("Couldn't move to the Trash", isPresented: Binding(
+            get: { trashError != nil }, set: { if !$0 { trashError = nil } }
+        )) {
+            Button("OK") { trashError = nil }
+        } message: {
+            Text(trashError ?? "")
+        }
         .task {
             records = await ImageSaver.loadRecords()
             #if DEBUG
@@ -46,20 +55,41 @@ struct GalleryView: View {
                 if let viewing, shown.contains(record) { self.viewing = viewing + 1 }
             }
         }
+        .onChange(of: upscaler.lastRecord) {
+            if let record = upscaler.lastRecord, !records.contains(record) {
+                records.insert(record, at: 0)
+                if let viewing, shown.contains(record) { self.viewing = viewing + 1 }
+            }
+        }
     }
 
     private func trashFromViewer(_ record: GenerationRecord) {
-        guard let index = shown.firstIndex(of: record) else { return }
-        trash([record])
+        guard let index = shown.firstIndex(of: record), trash([record]) else { return }
         viewing = shown.isEmpty ? nil : min(index, shown.count - 1)
     }
 
-    private func trash(_ trashed: [GenerationRecord]) {
-        for record in trashed { ImageSaver.delete(record) }
-        let names = Set(trashed.map(\.fileName))
-        records.removeAll { names.contains($0.fileName) }
-        selection.subtract(names)
+    /// Moves pictures to the Trash. Ones that couldn't be moved stay listed (and selected),
+    /// and an alert says why. Returns whether every one was moved.
+    @discardableResult
+    private func trash(_ pictures: [GenerationRecord]) -> Bool {
+        var moved: Set<String> = []
+        var errors: [String] = []
+        for record in pictures {
+            do {
+                try ImageSaver.delete(record)
+                moved.insert(record.fileName)
+            } catch {
+                errors.append(error.localizedDescription)
+            }
+        }
+        records.removeAll { moved.contains($0.fileName) }
+        selection.subtract(moved)
         if selection.isEmpty { selecting = false }
+        if !errors.isEmpty {
+            trashError = errors.count == 1 ? errors[0]
+                : "\(errors.count) pictures couldn't be moved. The first: \(errors[0])"
+        }
+        return errors.isEmpty
     }
 
     /// The pictures matching the search, newest first.
@@ -89,6 +119,7 @@ struct GalleryView: View {
                     Text("My Pictures").font(.headline)
                     Text("\(records.count)").font(.caption).foregroundStyle(.secondary)
                     Spacer()
+                    UpscaleStatus()
                     SearchField(prompt: "Search prompts and models", text: $search)
                     Button("Select") { selecting = true }
                         .controlSize(.small)
@@ -116,6 +147,7 @@ struct GalleryView: View {
         let urls = selected.map(fileURL)
         Text(selection.isEmpty ? "Select pictures" : "\(selection.count) selected").font(.headline)
         Spacer()
+        UpscaleStatus()
         Button(selection.count == shown.count ? "Deselect All" : "Select All") {
             if selection.count == shown.count {
                 selection.removeAll()
@@ -130,6 +162,12 @@ struct GalleryView: View {
                 .help("Copy the selected pictures")
             ShareLink(items: urls) { Label("Share", systemImage: "square.and.arrow.up") }
                 .help("Share the selected pictures")
+            UpscaleMenu(records: selected) {
+                Label("Upscale", systemImage: "arrow.up.left.and.arrow.down.right")
+            }
+            .menuStyle(.button)
+            .menuIndicator(.hidden)
+            .help("Upscale the selected pictures 2× or 4×")
             Button("Show in Finder", systemImage: "folder") { NSWorkspace.shared.activateFileViewerSelecting(urls) }
                 .help("Show the selected pictures in Finder")
             Button("Move to Trash", systemImage: "trash") { confirmTrash = true }
@@ -146,9 +184,17 @@ struct GalleryView: View {
         .controlSize(.small)
     }
 
+    /// Each picture goes on the pasteboard as PNG data and as its file, so it pastes as an
+    /// image in Messages, Slack or an editor, and as files in Finder.
     private func copy(_ urls: [URL]) {
+        let items = urls.map { url in
+            let item = NSPasteboardItem()
+            if let data = try? Data(contentsOf: url) { item.setData(data, forType: .png) }
+            item.setString(url.absoluteString, forType: .fileURL)
+            return item
+        }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.writeObjects(urls as [NSURL])
+        NSPasteboard.general.writeObjects(items)
     }
 
     /// A click opens the picture, or while selecting (or with ⌘ or ⇧) changes the selection.
@@ -205,6 +251,7 @@ struct GalleryView: View {
             let urls = selected.map(fileURL)
             Button("Copy \(urls.count) Pictures") { copy(urls) }
             Button("Show \(urls.count) Pictures in Finder") { NSWorkspace.shared.activateFileViewerSelecting(urls) }
+            UpscaleMenu(records: selected) { Text("Upscale \(urls.count) Pictures") }
             Divider()
             Button("Move \(urls.count) Pictures to Trash", role: .destructive) { confirmTrash = true }
         } else {
@@ -218,6 +265,7 @@ struct GalleryView: View {
             Button("Edit This Picture") {
                 app.useAsStartImage(fileURL(record), for: store.model(id: app.selectedModelID))
             }
+            UpscaleMenu(records: [record]) { Text("Upscale") }
             Button("Show in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([fileURL(record)])
             }

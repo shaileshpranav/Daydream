@@ -10,6 +10,8 @@ final class MLXBackend: ImageBackend {
     private let worker = MLXWorker()
     /// LoRAs baked into the currently loaded weights; nil when nothing is loaded.
     private var loadedLoRAs: [LoRARef]?
+    /// Steps in the picture being made (0 when idle), to turn a preview setting into an interval.
+    private let runningSteps = LockedInt()
 
     init(model: InstalledModel) {
         self.model = model
@@ -51,13 +53,18 @@ final class MLXBackend: ImageBackend {
         }
         if !worker.isRunning { try worker.start() }
         let loras = request.loras ?? []
-        try send([
+        var message: [String: Any] = [
             "op": "load",
             "family": family,
             "path": model.folder.path,
             "loras": loras.map { ["path": $0.source, "scale": $0.scale] },
             "float16": true,
-        ])
+        ]
+        #if DEBUG
+        // -mlxUntiledDecode YES decodes in one pass, to compare against the tiled decode.
+        if UserDefaults.standard.bool(forKey: "mlxUntiledDecode") { message["untiled_decode"] = true }
+        #endif
+        try send(message)
         while true {
             let event = try nextEvent()
             switch event["event"] as? String {
@@ -112,6 +119,8 @@ final class MLXBackend: ImageBackend {
             "out": out.path,
             "preview_every": Self.previewInterval(setting: previewEvery, steps: request.steps),
         ]) { a, _ in a })
+        runningSteps.value = request.steps
+        defer { runningSteps.value = 0 }
 
         var cancelSent = false
         var lastStep = (0, request.steps)
@@ -171,6 +180,13 @@ final class MLXBackend: ImageBackend {
     static func previewInterval(setting: Int, steps: Int) -> Int {
         guard setting > 0 else { return 0 }
         return max(1, min(setting, steps / 3))
+    }
+
+    /// The worker reads stdin on its own thread, so this reaches it mid-picture.
+    func setPreviewEvery(_ every: Int) {
+        let steps = runningSteps.value
+        guard steps > 0 else { return }
+        try? send(["op": "preview", "every": Self.previewInterval(setting: every, steps: steps)])
     }
 
     func unload() {

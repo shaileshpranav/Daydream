@@ -82,13 +82,17 @@ enum MLXFamilies {
         MLXFamily(id: "iris-3b-turbo", label: "Iris-3B Turbo",
                   defaults: ModelDefaults(steps: 4, guidance: 1, supportsNegativePrompt: false), resolution: 1024,
                   supportsStartImage: false, float16Compute: false),
+        // Anima Turbo peaked at 11.0 GB here at 1024 px, 4-bit, with the decode tiled (18.7 GB in
+        // one pass); the formula says 5.1. Aesthetic and base share its architecture.
         MLXFamily(id: "anima-turbo", label: "Anima Turbo",
                   defaults: ModelDefaults(steps: 10, guidance: 1, supportsNegativePrompt: false), resolution: 1024,
-                  supportsStartImage: false),
+                  supportsStartImage: false, extraMemoryGB: 5.9),
         MLXFamily(id: "anima-aesthetic", label: "Anima Aesthetic",
-                  defaults: ModelDefaults(steps: 30, guidance: 4), resolution: 1024, supportsStartImage: false),
+                  defaults: ModelDefaults(steps: 30, guidance: 4), resolution: 1024, supportsStartImage: false,
+                  extraMemoryGB: 5.9),
         MLXFamily(id: "anima-base", label: "Anima (base)",
-                  defaults: ModelDefaults(steps: 30, guidance: 4), resolution: 1024, supportsStartImage: false),
+                  defaults: ModelDefaults(steps: 30, guidance: 4), resolution: 1024, supportsStartImage: false,
+                  extraMemoryGB: 5.9),
         // mflux rejects any guidance but 1 on ERNIE-Image Turbo.
         MLXFamily(id: "ernie-image-turbo", label: "ERNIE-Image Turbo",
                   defaults: ModelDefaults(steps: 8, guidance: 1, supportsNegativePrompt: false), resolution: 1024,

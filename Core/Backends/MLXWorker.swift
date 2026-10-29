@@ -8,7 +8,9 @@ final class MLXWorker {
     }
 
     private var process: Process?
+    /// Written from the inference queue and, for live preview changes, the main thread.
     private var input: FileHandle?
+    private let inputLock = NSLock()
     private var reader: LineReader?
 
     var isRunning: Bool { process?.isRunning == true }
@@ -40,7 +42,7 @@ final class MLXWorker {
         try process.run()
 
         self.process = process
-        input = stdinPipe.fileHandleForWriting
+        inputLock.withLock { input = stdinPipe.fileHandleForWriting }
         reader = LineReader(handle: stdoutPipe.fileHandleForReading)
         let ready = try? nextEvent()
         guard ready?["event"] as? String == "ready" else {
@@ -49,10 +51,12 @@ final class MLXWorker {
     }
 
     func send(_ message: [String: Any]) throws {
-        guard let input else { throw RuntimeError("MLX worker isn't running.") }
         var data = try JSONSerialization.data(withJSONObject: message)
         data.append(0x0A)
-        try input.write(contentsOf: data)
+        try inputLock.withLock {
+            guard let input else { throw RuntimeError("MLX worker isn't running.") }
+            try input.write(contentsOf: data)
+        }
     }
 
     /// The next event line. Throws `Stopped` (and cleans up) when the process has exited.
@@ -75,7 +79,7 @@ final class MLXWorker {
             process.waitUntilExit()
         }
         process = nil
-        input = nil
+        inputLock.withLock { input = nil }
         reader = nil
     }
 

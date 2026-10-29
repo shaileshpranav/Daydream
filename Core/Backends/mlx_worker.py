@@ -4,7 +4,8 @@ The app starts this with the venv's Python and talks to it in JSON lines:
 requests on stdin, events on stdout. Everything mflux and its libraries print
 goes to stderr instead, so stdout carries only protocol lines.
 
-  -> {"op": "load", "family": "z-image-turbo", "path": "/…/model", "loras": [{"path": "…", "scale": 0.8}], "float16": true}
+  -> {"op": "load", "family": "z-image-turbo", "path": "/…/model", "loras": [{"path": "…", "scale": 0.8}], "float16": true,
+      "untiled_decode": false}   (optional, Debug builds: decode in one pass, for comparison)
   <- {"event": "loaded", "seconds": 12.3}
   -> {"op": "generate", "prompt": "…", "negative_prompt": "", "seed": 42, "steps": 9,
       "guidance": 0.0, "width": 1024, "height": 1024, "out": "/tmp/x.png",
@@ -21,14 +22,21 @@ The prompt rewriter runs its own instance with a small language model (mlx-lm):
       "temperature": 0.7, "max_tokens": 300}
   <- {"event": "reply", "text": "…", "seconds": 3.4}
 
+While a picture is being made, the app can change how often it previews; this takes
+effect at the next step (stdin is read on its own thread for it):
+
+  -> {"op": "preview", "every": 3}   (0 turns previews off)
+
 SIGUSR1 cancels the running generation at the next denoising step. To free
 memory the app simply terminates the process.
 """
 import gc
 import json
 import os
+import queue
 import signal
 import sys
+import threading
 import time
 import traceback
 
@@ -309,6 +317,20 @@ def chat(lm, req):
     return text.strip()
 
 
+def read_requests(requests):
+    """Reads stdin on its own thread, so a preview change reaches a generation in progress.
+    Everything else waits its turn on `requests`; None marks the end of input."""
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        req = json.loads(line)
+        if req.get("op") == "preview":
+            _preview["every"] = int(req.get("every", 0))
+        else:
+            requests.put(req)
+    requests.put(None)
+
+
 def main():
     global _cancel
     import mlx.core as mx
@@ -316,11 +338,10 @@ def main():
 
     model, family = None, None
     lm = None
+    requests = queue.Queue()
+    threading.Thread(target=read_requests, args=(requests,), daemon=True).start()
     emit("ready", pid=os.getpid())
-    for line in sys.stdin:
-        if not line.strip():
-            continue
-        req = json.loads(line)
+    while (req := requests.get()) is not None:
         start = time.time()
         try:
             if req["op"] == "load":
@@ -331,10 +352,15 @@ def main():
                 model = make_model(family, req["path"], req.get("loras", []), req.get("float16", True))
                 # Encode image-to-image start images in 512 px tiles. Encoding a 1024 px image
                 # in one pass adds ~5.7 GB (measured on FLUX.2 Klein 4B: 10.3 GB peak vs 6.9 GB
-                # tiled), enough to push a 16 GB Mac into heavy swapping. Decoding is unchanged:
-                # no decode tiles, so no seams.
+                # tiled), enough to push a 16 GB Mac into heavy swapping.
+                # Decode in tiles too where mflux says tiling costs nothing visually (every
+                # decoder but FLUX.2's). The Qwen-Image VAE decoding 1024 px in one pass took
+                # Anima Turbo to an 18.7 GB peak here; mflux's low-RAM mode tiles it the same way.
                 from mflux.models.common.vae.tiling_config import TilingConfig
-                model.tiling_config = TilingConfig(vae_decode_tiles_per_dim=None)
+                if TilingConfig.may_tile_implicitly(model) and not req.get("untiled_decode"):
+                    model.tiling_config = TilingConfig()
+                else:
+                    model.tiling_config = TilingConfig(vae_decode_tiles_per_dim=None)
                 # Registered once per loaded model; mflux has no unregister.
                 model.callbacks.register(Progress())
                 cache_prompt_encoding(model, family)

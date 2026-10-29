@@ -27,6 +27,10 @@ protocol ImageBackend: AnyObject {
         onStep: (Int, Int, CGImage?) -> Bool
     ) throws -> CGImage?
 
+    /// Changes the preview interval of the picture being made (0 turns previews off), from
+    /// the main thread while `generate` runs on the inference queue.
+    func setPreviewEvery(_ every: Int)
+
     func unload()
 }
 
@@ -34,6 +38,20 @@ extension ImageBackend {
     func load(for request: GenerationRequest) throws { try load() }
     func needsReload(for request: GenerationRequest) -> Bool { false }
     func withSpeedSettings(_ request: GenerationRequest) -> GenerationRequest { request }
+    func setPreviewEvery(_ every: Int) {}
+}
+
+/// An Int shared between the main thread and the inference queue.
+final class LockedInt: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Int
+
+    init(_ value: Int = 0) { stored = value }
+
+    var value: Int {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
+    }
 }
 
 enum BackendError: LocalizedError {

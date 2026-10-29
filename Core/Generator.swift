@@ -67,6 +67,13 @@ final class Generator {
         loadedModelID = nil
     }
 
+    /// Passes a preview setting change to the picture being made, so turning previews on or
+    /// off applies from its next step rather than the next picture.
+    func setPreviewEvery(_ every: Int) {
+        guard case .generating = phase, let backend else { return }
+        backend.setPreviewEvery(every)
+    }
+
     /// Starts the countdown to freeing the model (Settings → Speed & Memory). Called after
     /// each load or picture, and when the setting changes.
     func restartIdleTimer() {

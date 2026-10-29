@@ -6,6 +6,8 @@ import StableDiffusion
 final class StableDiffusionBackend: ImageBackend {
     let model: InstalledModel
     private var pipeline: StableDiffusionPipelineProtocol?
+    /// Read at every step, so the preview toggle reaches the picture being made.
+    private let previewEvery = LockedInt()
 
     init(model: InstalledModel) {
         self.model = model
@@ -86,9 +88,11 @@ final class StableDiffusionBackend: ImageBackend {
         }
 
         var cancelled = false
+        self.previewEvery.value = previewEvery
         let images = try pipeline.generateImages(configuration: config) { progress in
             let step = progress.step + 1
-            let wantsPreview = previewEvery > 0 && step % previewEvery == 0 && step < progress.stepCount
+            let every = self.previewEvery.value
+            let wantsPreview = every > 0 && step % every == 0 && step < progress.stepCount
             let preview = wantsPreview ? progress.currentImages.first ?? nil : nil
             if !onStep(step, progress.stepCount, preview) { cancelled = true }
             return !cancelled
@@ -96,6 +100,10 @@ final class StableDiffusionBackend: ImageBackend {
         if cancelled { throw CancellationError() }
         guard let image = images.first ?? nil else { throw BackendError.noImage }
         return image
+    }
+
+    func setPreviewEvery(_ every: Int) {
+        previewEvery.value = every
     }
 
     func unload() {

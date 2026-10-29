@@ -84,6 +84,15 @@ struct GenerationRequest: Codable, Equatable {
     }
 }
 
+/// How an upscaled picture was made from its original.
+struct UpscaleInfo: Codable, Hashable {
+    let scale: Int
+    /// The original picture's file name.
+    let source: String
+    let model: String
+    let seconds: Double
+}
+
 /// Written next to every saved PNG so the gallery can restore settings.
 struct GenerationRecord: Codable, Identifiable, Hashable {
     var id: String { fileName }
@@ -93,6 +102,8 @@ struct GenerationRecord: Codable, Identifiable, Hashable {
     let modelName: String
     let date: Date
     let seconds: Double
+    /// Set on an upscaled copy; `request` and the model are the original picture's.
+    var upscale: UpscaleInfo? = nil
 
     static func == (a: GenerationRecord, b: GenerationRecord) -> Bool { a.fileName == b.fileName }
     func hash(into hasher: inout Hasher) { hasher.combine(fileName) }

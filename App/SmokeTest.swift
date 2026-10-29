@@ -1,5 +1,6 @@
 #if DEBUG
 import CoreGraphics
+import CoreImage
 import Foundation
 import AppKit
 import ImageIO
@@ -19,6 +20,14 @@ enum SmokeTest {
         let defaults = UserDefaults.standard
         if let id = defaults.string(forKey: "previewTest") {
             Task { exit(await runPreviewTest(id: id, out: defaults.string(forKey: "out"), store: store, generator: generator) ? 0 : 1) }
+            return
+        }
+        if let name = defaults.string(forKey: "upscaleTest") {
+            Task { exit(await runUpscaleTest(fileName: name, out: defaults.string(forKey: "out")) ? 0 : 1) }
+            return
+        }
+        if let id = defaults.string(forKey: "livePreviewTest") {
+            Task { exit(await runLivePreviewTest(id: id, store: store, generator: generator) ? 0 : 1) }
             return
         }
         if let id = defaults.string(forKey: "precisionTest") {
@@ -70,6 +79,134 @@ enum SmokeTest {
     /// 1 (previews off, seed 21) encodes the prompt; 2 (off, seed 22) should reuse it;
     /// 3 (previews on, seed 22) measures preview cost, must match 2 pixel for pixel, and
     /// saves its previews to `out`.
+    /// `-upscaleTest <picture file name | latest> [-out <dir>]`: checks the tile layout, installs
+    /// the upscaler if needed, upscales the picture 2× and 4× (saved to My Pictures), and writes
+    /// close-ups across a tile boundary to `out` for a look at seams.
+    private static func runUpscaleTest(fileName: String, out: String?) async -> Bool {
+        func log(_ s: String) { print("[upscale] \(s)"); fflush(stdout) }
+        var ok = true
+
+        // Tiles must cover each side exactly once, and drop `pad` pixels at every inner edge.
+        let (tile, pad) = (UpscaleEngine.tile, UpscaleEngine.pad)
+        for length in [300, 512, 513, 768, 1000, 1024, 1536, 2048] {
+            let origins = UpscaleEngine.origins(length)
+            let spans = origins.indices.map { UpscaleEngine.span($0, of: origins, length: length) }
+            let contiguous = spans.first?.0 == 0 && spans.last?.1 == length
+                && zip(spans, spans.dropFirst()).allSatisfy { $0.1 == $1.0 }
+            let padded = origins.indices.allSatisfy { i in
+                let (lo, hi) = spans[i]
+                return (i == 0 || lo >= origins[i] + pad) && (i == origins.count - 1 || hi <= origins[i] + tile - pad)
+                    && lo >= origins[i] && hi <= origins[i] + tile
+            }
+            if !(contiguous && padded) {
+                log("tiles for \(length) px: origins \(origins), spans \(spans) ✗")
+                ok = false
+            }
+        }
+        log("tile layout for 8 sizes: \(ok ? "✓" : "✗")")
+
+        let records = await ImageSaver.loadRecords()
+        guard let record = fileName == "latest" ? records.first(where: { $0.upscale == nil }) : records.first(where: { $0.fileName == fileName })
+        else { log("no picture \(fileName)"); return false }
+        let upscaler = Upscaler()
+        if upscaler.status != .installed {
+            let start = Date()
+            do {
+                try await upscaler.install()
+            } catch {
+                log("install failed: \(error.localizedDescription)"); return false
+            }
+            log("installed in \(String(format: "%.1f", Date().timeIntervalSince(start))) s")
+        }
+        let size = ImageSaver.pixelSize(of: record)
+        log("picture \(record.fileName): \(size.map { "\(Int($0.width)) × \(Int($0.height))" } ?? "?")")
+        var results: [GenerationRecord] = []
+        for scale in [2, 4] {
+            upscaler.upscale([record], scale: scale)
+            while upscaler.isBusy { try? await Task.sleep(for: .milliseconds(100)) }
+            guard let result = upscaler.lastRecord, result.upscale?.scale == scale, result.upscale?.source == record.fileName else {
+                log("\(scale)×: \(upscaler.lastError ?? "no result") ✗"); return false
+            }
+            let outSize = ImageSaver.pixelSize(of: result)
+            let expected = size.map { CGSize(width: $0.width * Double(scale), height: $0.height * Double(scale)) }
+            let sized = outSize == expected
+            log("\(scale)×: \(outSize.map { "\(Int($0.width)) × \(Int($0.height))" } ?? "?") in \(String(format: "%.1f", result.upscale?.seconds ?? 0)) s \(sized ? "✓" : "✗") → \(result.fileName)")
+            ok = ok && sized
+            results.append(result)
+        }
+        // Close-ups across the first vertical tile boundary of the 4× picture, and the same
+        // area of the original enlarged with plain Lanczos for comparison.
+        if let out, let size, let four = results.last,
+           let big = StartImages.load(ImageSaver.folder.appending(path: four.fileName).path),
+           let small = StartImages.load(ImageSaver.folder.appending(path: record.fileName).path) {
+            let origins = UpscaleEngine.origins(Int(size.width))
+            let seam = UpscaleEngine.span(0, of: origins, length: Int(size.width)).1
+            let crop = CGRect(x: seam * 4 - 192, y: Int(size.height) * 2 - 192, width: 384, height: 384)
+            let dir = URL(filePath: out)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            func save(_ image: CGImage?, _ name: String) {
+                guard let image, let dest = CGImageDestinationCreateWithURL(dir.appending(path: name) as CFURL,
+                                                                             "public.png" as CFString, 1, nil) else { return }
+                CGImageDestinationAddImage(dest, image, nil)
+                CGImageDestinationFinalize(dest)
+            }
+            save(big.cropping(to: crop), "seam-esrgan.png")
+            let lanczos = CIImage(cgImage: small).applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: 4.0])
+            let flipped = CGRect(x: crop.minX, y: lanczos.extent.height - crop.maxY, width: crop.width, height: crop.height)
+            save(CIContext().createCGImage(lanczos, from: flipped), "seam-lanczos.png")
+            log("close-ups across the tile boundary at x = \(seam) px saved to \(out)")
+        }
+        log(ok ? "PASS" : "FAIL")
+        return ok
+    }
+
+    /// `-livePreviewTest <model id> [-base 512] [-steps 10]`: turns previews on partway through one picture
+    /// and off partway through another, checking each change applies from the next steps.
+    private static func runLivePreviewTest(id: String, store: ModelStore, generator: Generator) async -> Bool {
+        func log(_ s: String) { print("[live] \(s)"); fflush(stdout) }
+        guard var model = store.model(id: id) else { log("\(id) isn't installed"); return false }
+        let base = UserDefaults.standard.integer(forKey: "base")
+        if base > 0 { model.resolution = base }
+        var request = GenerationRequest(prompt: "a lighthouse on a rocky coast at sunset, waves crashing, dramatic clouds")
+        request.steps = model.recommended.steps
+        request.guidance = model.recommended.guidance
+        let steps = UserDefaults.standard.integer(forKey: "steps")
+        if steps > 0 { request.steps = steps }  // -steps 10 for a quicker check on a slow model
+        request.seed = 7
+
+        var ok = true
+        // (start with, switch to at step 2)
+        for (start, switchTo) in [(0, 1), (1, 0)] {
+            var previewSteps: [Int] = []
+            var switchedAt: Int?
+            let watcher = Task { @MainActor in
+                var last: CGImage?
+                while !Task.isCancelled {
+                    if case .generating(let step, _) = generator.phase {
+                        if switchedAt == nil, step >= 2 {
+                            generator.setPreviewEvery(switchTo)
+                            switchedAt = step
+                        }
+                        if let p = generator.preview, p !== last { previewSteps.append(step); last = p }
+                    }
+                    try? await Task.sleep(for: .milliseconds(20))
+                }
+            }
+            let outcome = await generator.generate(model: model, request: request, previewEvery: start)
+            watcher.cancel()
+            guard case .saved = outcome, let switched = switchedAt else { log("\(outcome)"); return false }
+            let before = previewSteps.filter { $0 <= switched }.count
+            let after = previewSteps.filter { $0 > switched + 1 }.count  // one may already be on its way
+            let passed = switchTo > 0 ? after > 0 : after == 0
+            log("previews \(start > 0 ? "on" : "off") → \(switchTo > 0 ? "on" : "off") at step \(switched) of \(request.steps): "
+                + "previews at steps \(previewSteps) (\(before) before, \(after) after) \(passed ? "✓" : "✗")")
+            ok = ok && passed
+        }
+        generator.unloadModel()
+        log(ok ? "PASS" : "FAIL")
+        return ok
+    }
+
     private static func runPreviewTest(id: String, out: String?, store: ModelStore, generator: Generator) async -> Bool {
         func log(_ s: String) { print("[preview] \(s)"); fflush(stdout) }
         guard var model = store.model(id: id) else { log("\(id) isn't installed"); return false }
@@ -302,6 +439,24 @@ enum SmokeTest {
     private static func runManagerTest(store: ModelStore) async -> Bool {
         func log(_ s: String) { print("[manager] \(s)"); fflush(stdout) }
         var ok = true
+
+        // The runtime installer's process runner: every line reaches progress, and a failure
+        // reports the last lines of output.
+        let lines = LockedInt()
+        let runError = await Task.detached { () -> String? in
+            do {
+                try MLXRuntime.run("/bin/sh", ["-c", "for i in $(seq 1 50); do echo line $i; done; exit 3"]) { _ in
+                    lines.value += 1
+                }
+                return nil
+            } catch {
+                return error.localizedDescription
+            }
+        }.value
+        let runnerOK = lines.value == 50 && runError?.contains("line 50") == true && runError?.contains("line 45") == false
+        log("runtime runner: \(lines.value) lines, error ends \"\(runError?.split(separator: "\n").last ?? "none")\" \(runnerOK ? "✓" : "✗")")
+        ok = ok && runnerOK
+
         let repos: [(String, String?)] = [
             ("mflux-community/z-image-turbo-mflux-q4", "z-image-turbo"),
             ("mflux-community/z-image-base-mflux-q8", "z-image"),
@@ -633,8 +788,12 @@ enum SmokeTest {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let original = UserDefaults.standard.string(forKey: "settingsTab")
         defer { UserDefaults.standard.set(original, forKey: "settingsTab") }
+        // The toolbar toggles, pressed through accessibility like a click, then pressed back.
+        let toggles = ["Info", "Live Preview", "Gallery"]
         var shots: [(name: String, show: () -> Void)] = [
             ("create", { app.section = .generate }),
+            ("create-toggled", { for label in toggles { pressButton(containing: label) } }),
+            ("create-toggled-back", { for label in toggles { pressButton(containing: label) } }),
             ("my-pictures", { app.section = .gallery }),
         ]
         for (i, tab) in SettingsTab.allCases.enumerated() {
@@ -660,6 +819,27 @@ enum SmokeTest {
             ok = ok && saved
         }
         return ok
+    }
+
+    /// Presses the first button in the window whose accessibility label contains `text`.
+    private static func pressButton(containing text: String) {
+        func find(_ element: Any) -> NSAccessibilityElementProtocol? {
+            guard let element = element as? NSAccessibilityElementProtocol else { return nil }
+            let object = element as AnyObject
+            if object.accessibilityRole?() == .button,
+               (object.accessibilityLabel?() ?? "").localizedCaseInsensitiveContains(text) {
+                return element
+            }
+            for child in object.accessibilityChildren?() ?? [] {
+                if let found = find(child) { return found }
+            }
+            return nil
+        }
+        guard let window = NSApp.windows.first(where: \.isVisible), let button = find(window) else {
+            print("[snapshots] no button containing \"\(text)\""); return
+        }
+        _ = (button as AnyObject).accessibilityPerformPress?()
+        print("[snapshots] pressed \((button as AnyObject).accessibilityLabel?() ?? text)")
     }
 }
 #endif

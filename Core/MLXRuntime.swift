@@ -106,7 +106,7 @@ final class MLXRuntime {
         return nil
     }
 
-    nonisolated private static func run(_ executable: String, _ arguments: [String],
+    nonisolated static func run(_ executable: String, _ arguments: [String],
                                         progress: @escaping @Sendable (String) -> Void) throws {
         let process = Process()
         process.executableURL = URL(filePath: executable)
@@ -114,18 +114,19 @@ final class MLXRuntime {
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
+        try process.run()
+        // Read the output on this (already background) thread until the process closes it,
+        // so `tail` is only ever touched here.
         var tail: [String] = []
-        pipe.fileHandleForReading.readabilityHandler = { handle in
-            let text = String(decoding: handle.availableData, as: UTF8.self)
+        while case let chunk = pipe.fileHandleForReading.availableData, !chunk.isEmpty {
+            let text = String(decoding: chunk, as: UTF8.self)
             for line in text.split(whereSeparator: \.isNewline) where !line.isEmpty {
                 progress(String(line.prefix(120)))
                 tail.append(String(line))
                 if tail.count > 20 { tail.removeFirst() }
             }
         }
-        try process.run()
         process.waitUntilExit()
-        pipe.fileHandleForReading.readabilityHandler = nil
         if process.terminationStatus != 0 {
             throw RuntimeError("\(URL(filePath: executable).lastPathComponent) \(arguments.prefix(3).joined(separator: " ")) failed:\n"
                                + tail.suffix(5).joined(separator: "\n"))

@@ -116,6 +116,10 @@ private struct InfoPanel: View {
                     LabeledContent("Scheduler", value: r.scheduler.rawValue)
                 }
                 if let image { LabeledContent("Size", value: "\(image.width) × \(image.height)") }
+                if let up = record.upscale {
+                    LabeledContent("Upscaled", value: "\(up.scale)× with \(up.model), \(up.seconds.formatted(.number.precision(.fractionLength(1)))) s")
+                        .help("From \(up.source). The other settings are the original picture's.")
+                }
                 if let loras = r.loras, !loras.isEmpty {
                     LabeledContent("LoRA") {
                         VStack(alignment: .trailing) {
@@ -142,6 +146,7 @@ private struct InfoPanel: View {
                 Button("Use as Start Image") {
                     app.useAsStartImage(url, for: store.model(id: app.selectedModelID))
                 }
+                UpscaleMenu(records: [record]) { Text("Upscale") }
                 Button("Copy Image") {
                     guard let image else { return }
                     NSPasteboard.general.clearContents()

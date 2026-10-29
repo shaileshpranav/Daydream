@@ -9,6 +9,7 @@ struct CoreMLImageGenApp: App {
     @State private var mlxRuntime = MLXRuntime()
     @State private var loraLibrary = LoRALibrary()
     @State private var promptModels = PromptModelStore()
+    @State private var upscaler = Upscaler()
     @AppStorage(AppearanceChoice.key) private var appearance = AppearanceChoice.dark
 
     init() {
@@ -28,6 +29,7 @@ struct CoreMLImageGenApp: App {
                 .environment(mlxRuntime)
                 .environment(loraLibrary)
                 .environment(promptModels)
+                .environment(upscaler)
                 .frame(minWidth: 1040, minHeight: 640)
                 .tint(Theme.accent)
                 // Set on the app rather than with preferredColorScheme, which can't go back to
@@ -102,12 +104,16 @@ final class AppState {
     /// ones the first time it appears.
     var appliedLaunchDefaults = false
 
+    /// The model Create last preloaded, so returning to Create doesn't load it again after
+    /// it was freed. Picking a different model preloads that one.
+    var preloadedModelID: String?
+
     /// A finished image the user clicked in the queue, shown instead of the latest one.
     var viewedRecord: GenerationRecord?
 
     /// True while a debug smoke test drives the app, so it doesn't preload models itself.
     var automationRunning = ["smokeTest", "queueTest", "img2imgTest", "loraTest", "enhanceTest", "preloadTest",
-                             "precisionTest", "managerTest", "previewTest", "mossTest", "snapshots"]
+                             "precisionTest", "managerTest", "previewTest", "mossTest", "snapshots", "livePreviewTest", "upscaleTest"]
         .contains { UserDefaults.standard.object(forKey: $0) != nil }
 
     var startImageError: String?
@@ -139,6 +145,8 @@ final class AppState {
 
 struct RootView: View {
     @Environment(AppState.self) private var app
+    @Environment(Generator.self) private var generator
+    @AppStorage(GenerationQueue.previewEveryKey) private var previewEvery = 5
 
     var body: some View {
         HStack(spacing: 0) {
@@ -157,6 +165,9 @@ struct RootView: View {
             .background(Theme.base)
         }
         .background(Theme.base.ignoresSafeArea())
+        // Here rather than in Create or Settings, so a change from either reaches the
+        // picture being made.
+        .onChange(of: previewEvery) { generator.setPreviewEvery(previewEvery) }
     }
 }
 

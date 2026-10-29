@@ -8,6 +8,7 @@ struct GenerateView: View {
     @Environment(Generator.self) private var generator
     @Environment(GenerationQueue.self) private var queue
     @Environment(LoRALibrary.self) private var library
+    @Environment(Upscaler.self) private var upscaler
     @State private var fastModeError: String?
     @AppStorage(GenerationQueue.previewEveryKey) private var previewEvery = 5
     @AppStorage(GenerationQueue.lastPreviewEveryKey) private var lastPreviewEvery = 5
@@ -32,6 +33,7 @@ struct GenerateView: View {
     /// Pictures moved to the Trash this session, so the latest one disappears from view too.
     @State private var trashed: Set<String> = []
     @State private var confirmTrash = false
+    @State private var trashError: String?
     @State private var zoom = ZoomState()
 
     private var runnableModels: [InstalledModel] {
@@ -71,6 +73,12 @@ struct GenerateView: View {
             if let record = generator.lastRecord, !records.contains(record) {
                 records.insert(record, at: 0)
             }
+        }
+        .onChange(of: upscaler.lastRecord) {
+            guard let record = upscaler.lastRecord, !records.contains(record) else { return }
+            records.insert(record, at: 0)
+            // Upscaled from the picture on screen: show the result in its place.
+            if record.upscale?.source == shownRecord?.fileName { app.viewedRecord = record }
         }
     }
 
@@ -468,13 +476,18 @@ struct GenerateView: View {
 
     // MARK: Model defaults
 
-    /// Loads the selected model shortly after it's picked, so Create starts at once
-    /// instead of waiting 5–10 s (MLX) or minutes (a Core ML model's first compile).
+    /// Loads the selected model shortly after it's picked (or at launch), so Create starts at
+    /// once instead of waiting 5–10 s (MLX) or minutes (a Core ML model's first compile).
+    /// Coming back to Create doesn't load it again: if it was freed (Unload, or the idle
+    /// timer in Settings), it stays freed until a picture needs it.
     private func preloadSelectedModel() async {
-        guard preloadModels, !app.automationRunning, let model = selectedModel else { return }
+        guard preloadModels, !app.automationRunning, let model = selectedModel,
+              app.preloadedModelID != model.id else { return }
         try? await Task.sleep(for: .seconds(1.5))  // don't load every model clicked past
-        guard !Task.isCancelled, !queue.isRunning, !generator.isBusy,
-              generator.loadedModelID != model.id else { return }
+        guard !Task.isCancelled else { return }
+        // Handled once per pick, even when it's already loaded or the queue is busy.
+        app.preloadedModelID = model.id
+        guard !queue.isRunning, !generator.isBusy, generator.loadedModelID != model.id else { return }
         await generator.preload(model: model, request: app.request)
     }
 
@@ -610,6 +623,13 @@ struct GenerateView: View {
                 if let record = shownRecord { trash(record) }
             }
         }
+        .alert("Couldn't move the picture to the Trash", isPresented: Binding(
+            get: { trashError != nil }, set: { if !$0 { trashError = nil } }
+        )) {
+            Button("OK") { trashError = nil }
+        } message: {
+            Text(trashError ?? "")
+        }
     }
 
     /// Actions on the picture being shown, in a row above it.
@@ -622,6 +642,7 @@ struct GenerateView: View {
                     .help("Back to the most recent picture")
                     .padding(.leading, 10)
             }
+            UpscaleStatus().padding(.leading, 10)
             Spacer(minLength: 0)
             Group {
                 Button("Use Prompt", systemImage: "text.quote") {
@@ -645,6 +666,12 @@ struct GenerateView: View {
                     if let record { app.useAsStartImage(fileURL(record), for: selectedModel) }
                 }
                 .help("Use as the start image, to change it with a new prompt")
+                UpscaleMenu(records: record.map { [$0] } ?? []) {
+                    Label("Upscale", systemImage: "arrow.up.left.and.arrow.down.right")
+                }
+                .menuStyle(.button)
+                .menuIndicator(.hidden)
+                .help("Make a bigger, sharper copy: 2× or 4× with Real-ESRGAN")
                 toolbarDivider
                 Button("Info", systemImage: "info.circle") { showInfo.toggle() }
                     .buttonStyle(IconButtonStyle(isSelected: showInfo))
@@ -682,7 +709,7 @@ struct GenerateView: View {
             .buttonStyle(IconButtonStyle(isSelected: previewEvery > 0))
             .help(previewEvery > 0
                   ? "Live preview is on (every \(previewEvery) steps). Click to turn it off: pictures finish a little faster"
-                  : "Live preview is off. Click to watch the picture form (from the next picture)")
+                  : "Live preview is off. Click to watch the picture form, from its next preview step")
             Button(showGallery ? "Hide Gallery" : "Show Gallery", systemImage: "sidebar.right") {
                 withAnimation { showGallery.toggle() }
             }
@@ -756,7 +783,12 @@ struct GenerateView: View {
 
     private func trash(_ record: GenerationRecord) {
         let index = records.firstIndex(of: record)
-        ImageSaver.delete(record)
+        do {
+            try ImageSaver.delete(record)
+        } catch {
+            trashError = error.localizedDescription
+            return
+        }
         trashed.insert(record.fileName)
         records.removeAll { $0 == record }
         guard record == shownRecord else { return }
@@ -830,6 +862,9 @@ private struct InfoOverlay: View {
                 row("Guidance", r.guidance.formatted(.number.precision(.fractionLength(1))))
                 if !isMLX { row("Scheduler", r.scheduler.rawValue) }
                 if let image { row("Size", "\(image.width) × \(image.height)") }
+                if let up = record.upscale {
+                    row("Upscaled", "\(up.scale)× with \(up.model), \(up.seconds.formatted(.number.precision(.fractionLength(1)))) s")
+                }
                 if let loras = r.loras, !loras.isEmpty {
                     row("LoRAs", loras.map { "\($0.name) × \($0.scale.formatted(.number.precision(.fractionLength(2))))" }
                         .joined(separator: ", "))
@@ -907,6 +942,7 @@ private struct GalleryPanel: View {
                                         app.useAsStartImage(ImageSaver.folder.appending(path: record.fileName),
                                                             for: store.model(id: app.selectedModelID))
                                     }
+                                    UpscaleMenu(records: [record]) { Text("Upscale") }
                                     Button("Show in Finder") {
                                         NSWorkspace.shared.activateFileViewerSelecting([ImageSaver.folder.appending(path: record.fileName)])
                                     }

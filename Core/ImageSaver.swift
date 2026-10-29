@@ -19,7 +19,43 @@ enum ImageSaver {
         let fileName = "\(stamp)-\(request.seed).png"
         let record = GenerationRecord(fileName: fileName, request: request, modelID: model.id,
                                       modelName: model.name, date: date, seconds: seconds)
+        try write(image, record: record)
+        return record
+    }
 
+    /// Saves an upscaled copy of `original` as a new picture, named after it (e.g.
+    /// "…-42-4x.png"), with the original's settings so it can be remade.
+    static func saveUpscaled(_ image: CGImage, from original: GenerationRecord, scale: Int,
+                             seconds: Double) throws -> GenerationRecord {
+        let stem = (original.fileName as NSString).deletingPathExtension
+        var fileName = "\(stem)-\(scale)x.png"
+        var n = 2
+        while FileManager.default.fileExists(atPath: folder.appending(path: fileName).path) {
+            fileName = "\(stem)-\(scale)x-\(n).png"
+            n += 1
+        }
+        var record = GenerationRecord(fileName: fileName, request: original.request, modelID: original.modelID,
+                                      modelName: original.modelName, date: Date(), seconds: original.seconds)
+        record.upscale = UpscaleInfo(scale: scale, source: original.fileName, model: Upscaler.modelName, seconds: seconds)
+        try write(image, record: record)
+        return record
+    }
+
+    /// A saved picture's size, read from its file's header without decoding it.
+    static func pixelSize(of record: GenerationRecord) -> CGSize? {
+        let url = folder.appending(path: record.fileName)
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int
+        else { return nil }
+        return CGSize(width: width, height: height)
+    }
+
+    /// Writes the PNG, with the record in its description, and the record as JSON beside it.
+    private static func write(_ image: CGImage, record: GenerationRecord) throws {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let fileName = record.fileName
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
@@ -35,7 +71,6 @@ enum ImageSaver {
         CGImageDestinationAddImage(dest, image, properties as CFDictionary)
         guard CGImageDestinationFinalize(dest) else { throw CocoaError(.fileWriteUnknown) }
         try json.write(to: url.deletingPathExtension().appendingPathExtension("json"))
-        return record
     }
 
     /// Every saved record, newest first. Reads one JSON file per image, so it runs off the
@@ -79,9 +114,19 @@ enum ImageSaver {
         return image
     }
 
-    static func delete(_ record: GenerationRecord) {
+    /// Moves the picture and its settings file to the Trash. Throws when the picture can't be
+    /// moved, so callers keep showing it; a picture already gone from the folder counts as done.
+    static func delete(_ record: GenerationRecord) throws {
+        let fm = FileManager.default
         let url = folder.appending(path: record.fileName)
-        try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
-        try? FileManager.default.trashItem(at: url.deletingPathExtension().appendingPathExtension("json"), resultingItemURL: nil)
+        if fm.fileExists(atPath: url.path) {
+            do {
+                try fm.trashItem(at: url, resultingItemURL: nil)
+            } catch {
+                throw RuntimeError("Couldn't move \(record.fileName) to the Trash: \(error.localizedDescription)")
+            }
+        }
+        // Without its picture the settings file is useless, so a failure here isn't reported.
+        try? fm.trashItem(at: url.deletingPathExtension().appendingPathExtension("json"), resultingItemURL: nil)
     }
 }

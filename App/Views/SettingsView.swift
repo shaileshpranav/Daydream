@@ -241,7 +241,7 @@ private struct SpeedSettings: View {
                     ForEach([5, 15, 30, 60], id: \.self) { Text("\($0) minutes unused").tag($0) }
                 } label: {
                     Text("Free the picture model after")
-                    Text("Gives the model's memory back to other apps when you stop making pictures. It loads again when you next create a picture or open Create, which takes 5–30 s.")
+                    Text("Gives the model's memory back to other apps when you stop making pictures. It stays freed until you create a picture or pick another model, then loads again in 5–30 s.")
                 }
                 .onChange(of: idleMinutes) { generator.restartIdleTimer() }
 
@@ -336,6 +336,8 @@ private struct StorageSettings: View {
                           detail: "MLX language models", size: sizes[PromptModel.root.path])
                 FolderRow(title: "MLX runtime", icon: "cpu", folder: MLXRuntime.root,
                           detail: "Python, MLX and mflux", size: sizes[MLXRuntime.root.path])
+                FolderRow(title: "Upscaler", icon: "arrow.up.left.and.arrow.down.right", folder: Upscaler.folder,
+                          detail: Upscaler.modelName, size: sizes[Upscaler.folder.path])
                 caption("Remove models on the Models page, and the MLX runtime under MLX Runtime.")
             }
 
@@ -349,7 +351,8 @@ private struct StorageSettings: View {
     }
 
     private func measure() async {
-        let folders = [ImageSaver.folder, StartImages.folder, store.root, loras, PromptModel.root, MLXRuntime.root]
+        let folders = [ImageSaver.folder, StartImages.folder, store.root, loras, PromptModel.root, MLXRuntime.root,
+                       Upscaler.folder]
         for folder in folders {
             let size = await Task.detached { ModelStore.directorySize(folder) }.value
             sizes[folder.path] = size
