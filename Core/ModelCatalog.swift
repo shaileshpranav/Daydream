@@ -127,6 +127,12 @@ struct InstalledModel: Codable, Identifiable, Hashable {
         kind != .mlx || (MLXFamilies.family(id: mlxFamily)?.supportsStartImage ?? true)
     }
 
+    /// Whether Edit with words can use this model (FLUX.2 Klein and FLUX 3 Klein). Qwen-Image
+    /// 2.1 has an mflux edit pipeline too; it hasn't been tried here, so it isn't offered.
+    var supportsEditing: Bool {
+        kind == .mlx && MLXFamilies.family(id: mlxFamily)?.supportsEditing == true
+    }
+
     /// Steps and guidance this model is tuned for; SD defaults for Core ML models.
     var recommended: ModelDefaults {
         defaults ?? ModelDefaults(steps: kind == .sdxl ? 30 : 25, guidance: 7.5)

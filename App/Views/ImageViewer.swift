@@ -116,6 +116,12 @@ private struct InfoPanel: View {
                     LabeledContent("Scheduler", value: r.scheduler.rawValue)
                 }
                 if let image { LabeledContent("Size", value: "\(image.width) × \(image.height)") }
+                if let edits = record.edits, !edits.isEmpty {
+                    LabeledContent("Edited") {
+                        VStack(alignment: .trailing) { ForEach(edits.indices, id: \.self) { Text(edits[$0]) } }
+                    }
+                    .help(record.editedFrom.map { "From \($0)" } ?? "From a file opened in Edit")
+                }
                 if let up = record.upscale {
                     LabeledContent("Upscaled", value: "\(up.scale)× with \(up.model), \(up.seconds.formatted(.number.precision(.fractionLength(1)))) s")
                         .help("From \(up.source). The other settings are the original picture's.")
@@ -143,6 +149,7 @@ private struct InfoPanel: View {
             }
             Section {
                 Button("Use These Settings") { app.restore(record) }
+                Button("Open in Edit") { app.openEditor(record) }
                 Button("Use as Start Image") {
                     app.useAsStartImage(url, for: store.model(id: app.selectedModelID))
                 }

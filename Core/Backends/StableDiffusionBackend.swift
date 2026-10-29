@@ -63,6 +63,9 @@ final class StableDiffusionBackend: ImageBackend {
         previewEvery: Int,
         onStep: (Int, Int, CGImage?) -> Bool
     ) throws -> CGImage? {
+        if request.references != nil {
+            throw RuntimeError("\(model.name) can't edit pictures from words. Pick FLUX.2 Klein or FLUX 3 Klein.")
+        }
         if pipeline == nil { try load() }
         guard let pipeline else { throw BackendError.noImage }
 

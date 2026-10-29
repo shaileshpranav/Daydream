@@ -262,7 +262,8 @@ struct GalleryView: View {
                 anchor = record.fileName
             }
             Button("Reuse These Settings") { app.restore(record) }
-            Button("Edit This Picture") {
+            Button("Open in Edit") { app.openEditor(record) }
+            Button("Use as Start Image") {
                 app.useAsStartImage(fileURL(record), for: store.model(id: app.selectedModelID))
             }
             UpscaleMenu(records: [record]) { Text("Upscale") }

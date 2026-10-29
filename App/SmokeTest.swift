@@ -22,6 +22,10 @@ enum SmokeTest {
             Task { exit(await runPreviewTest(id: id, out: defaults.string(forKey: "out"), store: store, generator: generator) ? 0 : 1) }
             return
         }
+        if let name = defaults.string(forKey: "editTest") {
+            Task { exit(await runEditTest(fileName: name, out: defaults.string(forKey: "out"), store: store, generator: generator) ? 0 : 1) }
+            return
+        }
         if let name = defaults.string(forKey: "upscaleTest") {
             Task { exit(await runUpscaleTest(fileName: name, out: defaults.string(forKey: "out")) ? 0 : 1) }
             return
@@ -79,6 +83,164 @@ enum SmokeTest {
     /// 1 (previews off, seed 21) encodes the prompt; 2 (off, seed 22) should reuse it;
     /// 3 (previews on, seed 22) measures preview cost, must match 2 pixel for pixel, and
     /// saves its previews to `out`.
+    /// `-editTest <picture file name> [-out <dir>] [-quick YES]`: drives an Edit session through
+    /// every tool on a real picture. Paint to redraw is checked to leave every pixel outside
+    /// the brush unchanged; -quick skips the two model-based tools.
+    private static func runEditTest(fileName: String, out: String?, store: ModelStore, generator: Generator) async -> Bool {
+        func log(_ s: String) { print("[edit] \(s)"); fflush(stdout) }
+        let records = await ImageSaver.loadRecords()
+        guard let record = records.first(where: { $0.fileName == fileName }) else { log("no picture \(fileName)"); return false }
+        let dir = out.map { URL(filePath: $0) }
+        if let dir { try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) }
+        func keep(_ image: CGImage, _ name: String) {
+            guard let dir else { return }
+            try? StartImages.writePNG(image, to: dir.appending(path: name))
+        }
+        var ok = true
+        func check(_ label: String, _ passed: Bool, _ detail: String = "") {
+            log("\(label): \(detail) \(passed ? "✓" : "✗")")
+            ok = ok && passed
+        }
+        let session: EditSession
+        do { session = try await EditSession.open(record) } catch { log("open: \(error)"); return false }
+        defer { session.close() }
+        let (w, h) = (session.original.width, session.original.height)
+        log("opened \(fileName): \(w) × \(h)")
+
+        let grey = CIContext().createCGImage(CIImage(color: CIColor(red: 0.5, green: 0.5, blue: 0.5)).cropped(to: CGRect(x: 0, y: 0, width: 8, height: 8)),
+                                             from: CGRect(x: 0, y: 0, width: 8, height: 8))!
+        let contrasted = meanRGB(try! ImageEdits.adjust(grey, Adjustments(contrast: 0.5)))
+        let warmed = meanRGB(try! ImageEdits.adjust(grey, Adjustments(warmth: 0.5)))
+        let cooled = meanRGB(try! ImageEdits.adjust(grey, Adjustments(warmth: -0.5)))
+        func channels(_ s: String) -> [Int] { s.split(separator: "/").compactMap { Int($0) } }
+        let midKept = channels(contrasted).allSatisfy { abs($0 - 128) <= 3 }
+        let warmer = channels(warmed)[0] > channels(warmed)[2], cooler = channels(cooled)[0] < channels(cooled)[2]
+        check("adjust maths", midKept && warmer && cooler,
+              "mid-grey with contrast +0.5 → \(contrasted), warmth +0.5 → \(warmed), warmth −0.5 → \(cooled)")
+
+        var start = Date()
+        await session.apply(.adjust(Adjustments(exposure: 0.5, contrast: 0.2, saturation: -0.3, warmth: 0.4)), label: "Adjusting…") {
+            try ImageEdits.adjust($0, Adjustments(exposure: 0.5, contrast: 0.2, saturation: -0.3, warmth: 0.4))
+        }
+        check("adjust", session.error == nil && session.current.width == w && session.position == 1,
+              "\(String(format: "%.2f", Date().timeIntervalSince(start))) s, mean \(meanRGB(session.original)) → \(meanRGB(session.current))")
+        keep(session.current, "1-adjust.png")
+
+        var crop = CropSettings()
+        crop.quarterTurns = 1
+        crop.rect = CGRect(x: 0.1, y: 0.2, width: 0.8, height: 0.5)
+        start = Date()
+        await session.apply(.crop(crop), label: "Cropping…") { try ImageEdits.transform($0, crop) }
+        let expected = (Int((0.8 * Double(h)).rounded()), Int((0.5 * Double(w)).rounded()))
+        check("rotate right + crop", session.error == nil && abs(session.current.width - expected.0) <= 1 && abs(session.current.height - expected.1) <= 1,
+              "\(session.current.width) × \(session.current.height) (expected about \(expected.0) × \(expected.1)), \(String(format: "%.2f", Date().timeIntervalSince(start))) s")
+        keep(session.current, "2-crop.png")
+
+        session.undo()
+        check("undo", session.position == 1 && session.current.width == w, "back to step 1, \(session.current.width) × \(session.current.height)")
+        session.redo()
+        check("redo", session.position == 2 && session.current.width != w, "step 2 again")
+        session.show(0)
+        check("back to the original", session.position == 0 && session.current.width == w && session.steps.count == 2, "2 steps kept for redo")
+
+        start = Date()
+        await session.apply(.removeBackground, label: "Finding the subject…") { try ImageEdits.removeBackground($0) }
+        let (clear, total) = alphaCounts(session.current)
+        check("remove background", session.error == nil && clear > total / 20 && clear < total * 19 / 20 && session.steps.count == 1,
+              "\(100 * clear / max(total, 1))% transparent, \(String(format: "%.2f", Date().timeIntervalSince(start))) s; the 2 undone steps replaced")
+        keep(session.current, "3-background.png")
+        session.show(0)
+
+        if !UserDefaults.standard.bool(forKey: "quick") {
+            if let klein = store.installed.first(where: \.supportsEditing) {
+                start = Date()
+                await session.editWithWords("make it a snowy night with a full moon, keep the fox the same", references: [],
+                                            model: klein, generator: generator, previewEvery: 0)
+                check("edit with words (\(klein.name))", session.error == nil && session.position == 1,
+                      "\(session.current.width) × \(session.current.height) in \(String(format: "%.1f", Date().timeIntervalSince(start))) s\(session.error.map { ": \($0)" } ?? "")")
+                keep(session.current, "4-words.png")
+                session.show(0)
+            } else {
+                log("edit with words: no editing model installed, skipped")
+            }
+            // A blob over the middle of the picture.
+            let centre = CGPoint(x: Double(w) * 0.5, y: Double(h) * 0.45)
+            let strokes = [BrushStroke(points: [CGPoint(x: centre.x - 60, y: centre.y), CGPoint(x: centre.x + 60, y: centre.y + 20)],
+                                       radius: Double(w) * 0.06)]
+            let mask = ImageEdits.mask(for: strokes, width: w, height: h)!
+            let painters = [store.installed.first { $0.kind == .mlx && $0.supportsStartImage && $0.mlxFamily == "flux2-klein-4b" },
+                            store.installed.first { $0.kind != .mlx }].compactMap { $0 }
+            for (i, model) in painters.enumerated() {
+                session.show(0)
+                start = Date()
+                await session.paint("a red wool scarf", strokes: strokes, change: 0.9, model: model, generator: generator, previewEvery: 0)
+                let outside = changedPixels(session.original, session.current, outside: mask)
+                let inside = changedPixels(session.original, session.current, outside: invert(mask))
+                check("paint to redraw (\(model.name))", session.error == nil && outside == 0 && inside > 100,
+                      "\(inside) pixels changed inside the brush, \(outside) outside, \(String(format: "%.1f", Date().timeIntervalSince(start))) s\(session.error.map { ": \($0)" } ?? "")")
+                keep(session.current, "5-paint-\(i + 1).png")
+            }
+            generator.unloadModel()
+        }
+
+        // Save the background-removed picture (step 1), so the record has a step to list.
+        session.show(1)
+        do {
+            let saved = try await session.save()
+            let reread = await ImageSaver.loadRecords().first { $0.fileName == saved.fileName }
+            check("save", reread?.edits == session.applied.map(\.operation.summary) && reread?.editedFrom == fileName,
+                  "\(saved.fileName) with \(saved.edits?.count ?? 0) step(s): \(saved.edits?.joined(separator: " → ") ?? "")")
+            if let reread { try? ImageSaver.delete(reread) }  // a test picture, not one to keep
+        } catch {
+            check("save", false, error.localizedDescription)
+        }
+        log(ok ? "PASS" : "FAIL")
+        return ok
+    }
+
+    private static func pixels(_ image: CGImage) -> [UInt8] {
+        var data = [UInt8](repeating: 0, count: image.width * image.height * 4)
+        let ctx = CGContext(data: &data, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        ctx?.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return data
+    }
+
+    private static func meanRGB(_ image: CGImage) -> String {
+        let p = pixels(image)
+        var sums = [0.0, 0.0, 0.0]
+        for i in stride(from: 0, to: p.count, by: 4) { for c in 0..<3 { sums[c] += Double(p[i + c]) } }
+        return sums.map { String(format: "%.0f", $0 / Double(p.count / 4)) }.joined(separator: "/")
+    }
+
+    private static func alphaCounts(_ image: CGImage) -> (clear: Int, total: Int) {
+        let p = pixels(image)
+        let clear = stride(from: 3, to: p.count, by: 4).count { p[$0] < 16 }
+        return (clear, p.count / 4)
+    }
+
+    private static func invert(_ mask: CGImage) -> CGImage {
+        let inverted = CIImage(cgImage: mask).applyingFilter("CIColorInvert")
+        return CIContext(options: [.workingColorSpace: NSNull()]).createCGImage(inverted, from: inverted.extent,
+                                                                               format: .L8, colorSpace: CGColorSpaceCreateDeviceGray())!
+    }
+
+    /// Pixels that differ between `a` and `b` where `mask` is black (0).
+    private static func changedPixels(_ a: CGImage, _ b: CGImage, outside mask: CGImage) -> Int {
+        guard a.width == b.width, a.height == b.height else { return Int.max }
+        let (pa, pb) = (pixels(a), pixels(b))
+        var m = [UInt8](repeating: 0, count: mask.width * mask.height)
+        let ctx = CGContext(data: &m, width: mask.width, height: mask.height, bitsPerComponent: 8, bytesPerRow: mask.width,
+                            space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)
+        ctx?.draw(mask, in: CGRect(x: 0, y: 0, width: mask.width, height: mask.height))
+        var changed = 0
+        for i in 0..<m.count where m[i] == 0 {
+            let j = i * 4
+            if pa[j] != pb[j] || pa[j + 1] != pb[j + 1] || pa[j + 2] != pb[j + 2] { changed += 1 }
+        }
+        return changed
+    }
+
     /// `-upscaleTest <picture file name | latest> [-out <dir>]`: checks the tile layout, installs
     /// the upscaler if needed, upscales the picture 2× and 4× (saved to My Pictures), and writes
     /// close-ups across a tile boundary to `out` for a look at seams.
@@ -795,7 +957,17 @@ enum SmokeTest {
             ("create-toggled", { for label in toggles { pressButton(containing: label) } }),
             ("create-toggled-back", { for label in toggles { pressButton(containing: label) } }),
             ("my-pictures", { app.section = .gallery }),
+            ("edit-welcome", { app.section = .edit }),
         ]
+        // The Edit section with the newest picture open, on each tool.
+        if let record = await ImageSaver.loadRecords().first {
+            for tool in EditTool.allCases {
+                shots.append(("edit-\(tool.id.lowercased())", {
+                    if app.editSession == nil { app.openEditor(record) }
+                    UserDefaults.standard.set(tool.rawValue, forKey: "edit.tool")
+                }))
+            }
+        }
         for (i, tab) in SettingsTab.allCases.enumerated() {
             shots.append(("settings-\(i)-\(tab.id)", {
                 app.section = .settings

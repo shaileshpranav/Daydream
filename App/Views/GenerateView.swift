@@ -662,10 +662,14 @@ struct GenerateView: View {
                 Button("Use All", systemImage: "arrow.uturn.backward") { if let record { app.restore(record) } }
                     .help("Use all of this picture's settings, including the model")
                 toolbarDivider
-                Button("Edit This Picture", systemImage: "photo.badge.arrow.down") {
+                Button("Use as Start Image", systemImage: "photo.badge.arrow.down") {
                     if let record { app.useAsStartImage(fileURL(record), for: selectedModel) }
                 }
                 .help("Use as the start image, to change it with a new prompt")
+                Button("Open in Edit", systemImage: "paintbrush.pointed") {
+                    if let record { app.openEditor(record) }
+                }
+                .help("Open in the Edit section: adjust, crop, edit with words, paint to redraw, remove the background")
                 UpscaleMenu(records: record.map { [$0] } ?? []) {
                     Label("Upscale", systemImage: "arrow.up.left.and.arrow.down.right")
                 }
@@ -865,6 +869,9 @@ private struct InfoOverlay: View {
                 if let up = record.upscale {
                     row("Upscaled", "\(up.scale)× with \(up.model), \(up.seconds.formatted(.number.precision(.fractionLength(1)))) s")
                 }
+                if let edits = record.edits, !edits.isEmpty {
+                    row("Edited", edits.joined(separator: " → "))
+                }
                 if let loras = r.loras, !loras.isEmpty {
                     row("LoRAs", loras.map { "\($0.name) × \($0.scale.formatted(.number.precision(.fractionLength(2))))" }
                         .joined(separator: ", "))
@@ -938,10 +945,11 @@ private struct GalleryPanel: View {
                                 .onTapGesture { onSelect(record) }
                                 .contextMenu {
                                     Button("Use All Settings") { app.restore(record) }
-                                    Button("Edit This Picture") {
+                                    Button("Use as Start Image") {
                                         app.useAsStartImage(ImageSaver.folder.appending(path: record.fileName),
                                                             for: store.model(id: app.selectedModelID))
                                     }
+                                    Button("Open in Edit") { app.openEditor(record) }
                                     UpscaleMenu(records: [record]) { Text("Upscale") }
                                     Button("Show in Finder") {
                                         NSWorkspace.shared.activateFileViewerSelecting([ImageSaver.folder.appending(path: record.fileName)])

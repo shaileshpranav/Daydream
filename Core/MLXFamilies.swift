@@ -19,6 +19,9 @@ struct MLXFamily: Identifiable, Hashable {
     var float16Compute = true
     /// Measured peak memory above MemoryEstimate's generic formula, where it was known to be low.
     var extraMemoryGB = 0.0
+    /// Whether mflux has an editing pipeline for the same weights (Edit with words). The
+    /// worker reloads the model as that pipeline when a request has reference pictures.
+    var supportsEditing = false
 }
 
 /// A community LoRA distilled for few steps without CFG. Fast mode downloads it once into
@@ -50,9 +53,11 @@ enum MLXFamilies {
         MLXFamily(id: "z-image", label: "Z-Image (base)",
                   defaults: ModelDefaults(steps: 50, guidance: 4), resolution: 1024),
         MLXFamily(id: "flux2-klein-4b", label: "FLUX.2 Klein 4B",
-                  defaults: ModelDefaults(steps: 4, guidance: 1, supportsNegativePrompt: false), resolution: 1024),
+                  defaults: ModelDefaults(steps: 4, guidance: 1, supportsNegativePrompt: false), resolution: 1024,
+                  supportsEditing: true),
         MLXFamily(id: "flux2-klein-9b", label: "FLUX.2 Klein 9B",
-                  defaults: ModelDefaults(steps: 4, guidance: 1, supportsNegativePrompt: false), resolution: 1024),
+                  defaults: ModelDefaults(steps: 4, guidance: 1, supportsNegativePrompt: false), resolution: 1024,
+                  supportsEditing: true),
         MLXFamily(id: "qwen-image-2.1-turbo", label: "Qwen-Image 2.1 Turbo",
                   defaults: ModelDefaults(steps: 8, guidance: 1), resolution: 768, supportsStepCache: true),
         MLXFamily(id: "qwen-image-2.1", label: "Qwen-Image 2.1 (base)",
@@ -77,7 +82,7 @@ enum MLXFamilies {
         // published with the current VAE decode, so it starts at 768 px to stay off swap.
         MLXFamily(id: "flux3-klein", label: "FLUX 3 Klein",
                   defaults: ModelDefaults(steps: 16, guidance: 1, supportsNegativePrompt: false), resolution: 768,
-                  supportsStartImage: false),
+                  supportsStartImage: false, supportsEditing: true),
         // Iris denoises pixels directly (no VAE) and has no LoRA or float16 option in mflux.
         MLXFamily(id: "iris-3b-turbo", label: "Iris-3B Turbo",
                   defaults: ModelDefaults(steps: 4, guidance: 1, supportsNegativePrompt: false), resolution: 1024,

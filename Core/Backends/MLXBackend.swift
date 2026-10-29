@@ -10,6 +10,8 @@ final class MLXBackend: ImageBackend {
     private let worker = MLXWorker()
     /// LoRAs baked into the currently loaded weights; nil when nothing is loaded.
     private var loadedLoRAs: [LoRARef]?
+    /// Whether the loaded pipeline is the family's editing one (Edit with words).
+    private var loadedForEditing = false
     /// Steps in the picture being made (0 when idle), to turn a preview setting into an interval.
     private let runningSteps = LockedInt()
 
@@ -59,6 +61,7 @@ final class MLXBackend: ImageBackend {
             "path": model.folder.path,
             "loras": loras.map { ["path": $0.source, "scale": $0.scale] },
             "float16": true,
+            "edit": request.references != nil,
         ]
         #if DEBUG
         // -mlxUntiledDecode YES decodes in one pass, to compare against the tiled decode.
@@ -70,6 +73,7 @@ final class MLXBackend: ImageBackend {
             switch event["event"] as? String {
             case "loaded":
                 loadedLoRAs = loras
+                loadedForEditing = request.references != nil
                 return
             case "error":
                 throw RuntimeError(event["message"] as? String ?? "MLX worker failed to load the model.")
@@ -80,8 +84,9 @@ final class MLXBackend: ImageBackend {
     }
 
     /// mflux bakes LoRAs into the weights at load, so a different LoRA set needs a reload.
+    /// Edit with words loads the family's editing pipeline, and plain pictures the usual one.
     func needsReload(for request: GenerationRequest) -> Bool {
-        loadedLoRAs != (request.loras ?? [])
+        loadedLoRAs != (request.loras ?? []) || loadedForEditing != (request.references != nil)
     }
 
     func generate(
@@ -89,6 +94,9 @@ final class MLXBackend: ImageBackend {
         previewEvery: Int,
         onStep: (Int, Int, CGImage?) -> Bool
     ) throws -> CGImage? {
+        if request.references != nil, !model.supportsEditing {
+            throw RuntimeError("\(model.name) can't edit pictures from words. Pick FLUX.2 Klein or FLUX 3 Klein.")
+        }
         if request.startImage != nil, !model.supportsStartImage {
             throw RuntimeError("\(model.name) can't start from a picture. Remove the start image, or pick another model.")
         }
@@ -105,6 +113,7 @@ final class MLXBackend: ImageBackend {
             optional["image_path"] = path
             optional["image_strength"] = 1 - min(max(request.change ?? 0.6, 0.05), 1)
         }
+        if let references = request.references { optional["reference_paths"] = references }
         // Set by the generator through withSpeedSettings, so the saved record matches the run.
         if let ratio = request.stepCacheRatio { optional["step_cache_ratio"] = ratio }
         try send(optional.merging([

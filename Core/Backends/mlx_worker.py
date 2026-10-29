@@ -5,11 +5,13 @@ requests on stdin, events on stdout. Everything mflux and its libraries print
 goes to stderr instead, so stdout carries only protocol lines.
 
   -> {"op": "load", "family": "z-image-turbo", "path": "/…/model", "loras": [{"path": "…", "scale": 0.8}], "float16": true,
-      "untiled_decode": false}   (optional, Debug builds: decode in one pass, for comparison)
+      "untiled_decode": false,   (optional, Debug builds: decode in one pass, for comparison)
+      "edit": false}             (optional: load the family's editing pipeline, EDIT_FAMILIES)
   <- {"event": "loaded", "seconds": 12.3}
   -> {"op": "generate", "prompt": "…", "negative_prompt": "", "seed": 42, "steps": 9,
       "guidance": 0.0, "width": 1024, "height": 1024, "out": "/tmp/x.png",
-      "step_cache_ratio": 0.25}   (optional; MOSS-Image and Qwen-Image 2.1 only)
+      "step_cache_ratio": 0.25,   (optional; MOSS-Image and Qwen-Image 2.1 only)
+      "reference_paths": ["/…/a.png"]}   (optional, with an edit load: Edit with words)
   <- {"event": "step", "step": 1, "total": 9} …
   <- {"event": "done", "path": "/tmp/x.png", "seconds": 61.0}
   <- {"event": "error", "message": "…"} / {"event": "cancelled"}
@@ -87,7 +89,16 @@ def _accepts(function, name):
     return name in inspect.signature(function).parameters
 
 
-def make_model(family, path, loras, float16):
+# Family -> (module, class) of mflux's editing pipeline for the same weights. Keep in sync
+# with MLXFamily.supportsEditing in Core/MLXFamilies.swift.
+EDIT_FAMILIES = {
+    "flux2-klein-4b": ("mflux.models.flux2.variants", "Flux2KleinEdit"),
+    "flux2-klein-9b": ("mflux.models.flux2.variants", "Flux2KleinEdit"),
+    "flux3-klein": ("mflux.models.flux3.variants", "Flux3KleinEdit"),
+}
+
+
+def make_model(family, path, loras, float16, edit=False):
     import importlib
     import mlx.core as mx
     from mflux.models.common.config import ModelConfig
@@ -95,6 +106,10 @@ def make_model(family, path, loras, float16):
     if family not in FAMILIES:
         raise ValueError(f"Unknown model family: {family}")
     module, class_name, config = FAMILIES[family]
+    if edit:
+        if family not in EDIT_FAMILIES:
+            raise ValueError("This model can't edit pictures from words. Pick FLUX.2 Klein or FLUX 3 Klein.")
+        module, class_name = EDIT_FAMILIES[family]
     cls = getattr(importlib.import_module(module), class_name)
     kwargs = dict(model_path=path, model_config=getattr(ModelConfig, config)())
     # The model classes differ in what they take (Iris has no LoRAs; MOSS-Image, Iris and
@@ -286,8 +301,14 @@ def generate(model, family, req):
     # Each option is passed only if this family's generate_image takes it: FLUX.2/3 Klein
     # and Iris have no negative prompt, only some families have image-to-image or step reuse.
     accepts = lambda name: _accepts(model.generate_image, name)
+    # Edit with words: the edit pipelines take the picture being edited (and any more
+    # references) as image_paths.
+    if req.get("reference_paths"):
+        if not accepts("image_paths"):
+            raise ValueError("This model can't edit pictures from words.")
+        kwargs["image_paths"] = list(req["reference_paths"])
     # Image-to-image: image_strength is the share of steps skipped (higher keeps more).
-    if req.get("image_path"):
+    elif req.get("image_path"):
         if not accepts("image_path"):
             raise ValueError("This model can't start from a picture. Remove the start image.")
         kwargs["image_path"] = req["image_path"]
@@ -349,7 +370,8 @@ def main():
                 gc.collect()
                 mx.clear_cache()
                 family = req["family"]
-                model = make_model(family, req["path"], req.get("loras", []), req.get("float16", True))
+                model = make_model(family, req["path"], req.get("loras", []), req.get("float16", True),
+                                   edit=bool(req.get("edit")))
                 # Encode image-to-image start images in 512 px tiles. Encoding a 1024 px image
                 # in one pass adds ~5.7 GB (measured on FLUX.2 Klein 4B: 10.3 GB peak vs 6.9 GB
                 # tiled), enough to push a 16 GB Mac into heavy swapping.
@@ -363,7 +385,9 @@ def main():
                     model.tiling_config = TilingConfig(vae_decode_tiles_per_dim=None)
                 # Registered once per loaded model; mflux has no unregister.
                 model.callbacks.register(Progress())
-                cache_prompt_encoding(model, family)
+                # The edit pipelines encode prompts their own way; reuse is for text-to-image.
+                if not req.get("edit"):
+                    cache_prompt_encoding(model, family)
                 _record_scheduler_steps()
                 emit("loaded", seconds=time.time() - start)
             elif req["op"] == "generate":

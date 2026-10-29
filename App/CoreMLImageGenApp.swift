@@ -14,6 +14,8 @@ struct CoreMLImageGenApp: App {
 
     init() {
         UserDefaults.standard.register(defaults: SettingsDefaults.registered)
+        // Step pictures from an edit the app quit in the middle of.
+        EditSession.removeLeftovers()
         let generator = Generator()
         _generator = State(initialValue: generator)
         _queue = State(initialValue: GenerationQueue(generator: generator))
@@ -61,6 +63,7 @@ struct CoreMLImageGenApp: App {
 enum AppSection: String, CaseIterable, Identifiable {
     case generate = "Create"
     case gallery = "My Pictures"
+    case edit = "Edit"
     case queue = "Queue"
     case models = "Models"
     case settings = "Settings"
@@ -74,6 +77,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         switch self {
         case .generate: "wand.and.stars"
         case .gallery: "photo.on.rectangle"
+        case .edit: "paintbrush.pointed"
         case .queue: "list.bullet.rectangle"
         case .models: "shippingbox"
         case .settings: "gearshape"
@@ -113,10 +117,32 @@ final class AppState {
 
     /// True while a debug smoke test drives the app, so it doesn't preload models itself.
     var automationRunning = ["smokeTest", "queueTest", "img2imgTest", "loraTest", "enhanceTest", "preloadTest",
-                             "precisionTest", "managerTest", "previewTest", "mossTest", "snapshots", "livePreviewTest", "upscaleTest"]
+                             "precisionTest", "managerTest", "previewTest", "mossTest", "snapshots", "livePreviewTest", "upscaleTest", "editTest"]
         .contains { UserDefaults.standard.object(forKey: $0) != nil }
 
     var startImageError: String?
+
+    /// The picture open in the Edit section, kept while other sections are shown.
+    var editSession: EditSession?
+    /// A picture asked to be opened in Edit; the Edit section opens it (asking first if the
+    /// open picture has unsaved steps).
+    var editRequest: EditRequest?
+    var editError: String?
+
+    enum EditRequest: Equatable {
+        case record(GenerationRecord)
+        case file(URL)
+    }
+
+    func openEditor(_ record: GenerationRecord) {
+        editRequest = .record(record)
+        section = .edit
+    }
+
+    func openEditor(file url: URL) {
+        editRequest = .file(url)
+        section = .edit
+    }
 
     /// Makes `url` the image-to-image start image. For MLX models (any size) the aspect
     /// is switched to the one closest to the image so it isn't squashed.
@@ -156,6 +182,7 @@ struct RootView: View {
                 switch app.section {
                 case .generate: GenerateView()
                 case .gallery: GalleryView()
+                case .edit: EditView()
                 case .queue: QueuePage()
                 case .models: ModelManagerView()
                 case .settings: SettingsView()

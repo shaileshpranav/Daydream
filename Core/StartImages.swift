@@ -18,14 +18,23 @@ enum StartImages {
         guard let image = load(url.path) else {
             throw RuntimeError("\(url.lastPathComponent) isn't an image this Mac can read.")
         }
+        return try save(image)
+    }
+
+    /// Saves `image` into the folder as a new PNG and returns its path.
+    static func save(_ image: CGImage) throws -> String {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let dest = folder.appending(path: "\(UUID().uuidString).png")
-        guard let out = CGImageDestinationCreateWithURL(dest as CFURL, UTType.png.identifier as CFString, 1, nil) else {
+        try writePNG(image, to: dest)
+        return dest.path
+    }
+
+    static func writePNG(_ image: CGImage, to url: URL) throws {
+        guard let out = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
             throw CocoaError(.fileWriteUnknown)
         }
         CGImageDestinationAddImage(out, image, nil)
         guard CGImageDestinationFinalize(out) else { throw CocoaError(.fileWriteUnknown) }
-        return dest.path
     }
 
     static func load(_ path: String) -> CGImage? {
@@ -37,7 +46,11 @@ enum StartImages {
     /// The preset aspect closest to the image's shape, so the start image isn't squashed.
     static func closestAspect(to path: String) -> AspectChoice? {
         guard let image = load(path) else { return nil }
-        let ratio = Double(image.width) / Double(image.height)
+        return closestAspect(width: image.width, height: image.height)
+    }
+
+    static func closestAspect(width: Int, height: Int) -> AspectChoice? {
+        let ratio = Double(width) / Double(height)
         let ratios: [(AspectChoice, Double)] = [(.square, 1), (.portrait, 3.0 / 4), (.landscape, 4.0 / 3),
                                                 (.wide, 16.0 / 9), (.tall, 9.0 / 16)]
         return ratios.min { abs(log($0.1 / ratio)) < abs(log($1.1 / ratio)) }?.0

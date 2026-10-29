@@ -28,17 +28,31 @@ enum ImageSaver {
     static func saveUpscaled(_ image: CGImage, from original: GenerationRecord, scale: Int,
                              seconds: Double) throws -> GenerationRecord {
         let stem = (original.fileName as NSString).deletingPathExtension
-        var fileName = "\(stem)-\(scale)x.png"
-        var n = 2
-        while FileManager.default.fileExists(atPath: folder.appending(path: fileName).path) {
-            fileName = "\(stem)-\(scale)x-\(n).png"
-            n += 1
-        }
+        let fileName = unusedName("\(stem)-\(scale)x")
         var record = GenerationRecord(fileName: fileName, request: original.request, modelID: original.modelID,
                                       modelName: original.modelName, date: Date(), seconds: original.seconds)
         record.upscale = UpscaleInfo(scale: scale, source: original.fileName, model: Upscaler.modelName, seconds: seconds)
         try write(image, record: record)
         return record
+    }
+
+    /// Saves a picture from the Edit section. `record` is filled in with a file name based on
+    /// `stem` ("…-edit.png"); everything else describing the picture comes from the caller.
+    static func saveEdited(_ image: CGImage, stem: String, record: (String) -> GenerationRecord) throws -> GenerationRecord {
+        let saved = record(unusedName("\(stem)-edit"))
+        try write(image, record: saved)
+        return saved
+    }
+
+    /// "<stem>.png", or "<stem>-2.png" and so on if that's taken.
+    private static func unusedName(_ stem: String) -> String {
+        var fileName = "\(stem).png"
+        var n = 2
+        while FileManager.default.fileExists(atPath: folder.appending(path: fileName).path) {
+            fileName = "\(stem)-\(n).png"
+            n += 1
+        }
+        return fileName
     }
 
     /// A saved picture's size, read from its file's header without decoding it.

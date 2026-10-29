@@ -69,6 +69,9 @@ struct GenerationRequest: Codable, Equatable {
     /// change it, 0 = keep it as is, 1 = ignore it entirely.
     var startImage: String?
     var change: Double? = 0.6
+    /// Edit with words: the pictures an editing model works from (copies in
+    /// StartImages.folder), the picture being edited first. Nil for an ordinary picture.
+    var references: [String]?
     /// Share of steps whose model output was reused ("Skip near-identical steps" in
     /// Settings). Filled in by the generator from the setting at the time, so a saved
     /// picture records it; nil when nothing was skipped.
@@ -104,6 +107,10 @@ struct GenerationRecord: Codable, Identifiable, Hashable {
     let seconds: Double
     /// Set on an upscaled copy; `request` and the model are the original picture's.
     var upscale: UpscaleInfo? = nil
+    /// Set on a picture saved from the Edit section: the steps applied, in order, and the
+    /// picture they started from (nil for a file opened from disk).
+    var edits: [String]? = nil
+    var editedFrom: String? = nil
 
     static func == (a: GenerationRecord, b: GenerationRecord) -> Bool { a.fileName == b.fileName }
     func hash(into hasher: inout Hasher) { hasher.combine(fileName) }

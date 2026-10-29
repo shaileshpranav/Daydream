@@ -546,7 +546,8 @@ private struct AboutSettings: View {
     }
 
     private let shortcuts: [(String, String)] = [
-        ("Create, My Pictures, Queue, Models", "⌥⌘1 – ⌥⌘4"),
+        ("Create, My Pictures, Edit, Queue, Models", "⌥⌘1 – ⌥⌘5"),
+        ("Save the edited picture in Edit", "⌘S"),
         ("Settings", "⌘,"),
         ("Create the picture", "⌘↩"),
         ("Stop the picture being made", "Esc"),

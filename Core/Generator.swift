@@ -120,28 +120,7 @@ final class Generator {
         cancelFlag.set(false)
 
         do {
-            let backend = try await prepareBackend(for: model, request: request)
-            // Record the speed settings this run applies (they follow the current Settings, not
-            // what a restored picture used), so the saved settings describe this picture.
-            let request = backend.withSpeedSettings(request)
-            phase = .generating(step: 0, total: request.steps)
-            let start = Date()
-            let flag = cancelFlag
-            let timer = StepTimer()
-            let image: CGImage? = try await run {
-                try backend.generate(request, previewEvery: previewEvery) { step, total, preview in
-                    let eta = timer.record(step: step, total: total)
-                    Task { @MainActor [weak self] in
-                        guard let self, self.isBusy else { return }
-                        self.phase = .generating(step: step, total: total)
-                        self.etaSeconds = eta
-                        if let preview { self.preview = preview }
-                    }
-                    return !flag.isSet
-                }
-            }
-            guard let image else { throw BackendError.noImage }
-            let seconds = Date().timeIntervalSince(start)
+            let (image, request, seconds) = try await produce(model: model, request: request, previewEvery: previewEvery)
             lastImage = image
             preview = nil
             let record = try ImageSaver.save(image, request: request, model: model, seconds: seconds)
@@ -157,6 +136,49 @@ final class Generator {
         phase = .idle
         etaSeconds = nil
         return outcome
+    }
+
+    /// Makes a picture without saving it or showing it as Create's latest, for the Edit
+    /// section's steps. Takes turns with generate() on the one resident model.
+    func render(model: InstalledModel, request: GenerationRequest, previewEvery: Int) async throws -> CGImage {
+        await acquireWork()
+        defer { releaseWork() }
+        preview = nil
+        etaSeconds = nil
+        cancelFlag.set(false)
+        defer {
+            phase = .idle
+            preview = nil
+            etaSeconds = nil
+        }
+        return try await produce(model: model, request: request, previewEvery: previewEvery).image
+    }
+
+    /// Loads the model if needed and runs one picture, reporting steps and previews.
+    private func produce(model: InstalledModel, request: GenerationRequest,
+                         previewEvery: Int) async throws -> (image: CGImage, request: GenerationRequest, seconds: Double) {
+        let backend = try await prepareBackend(for: model, request: request)
+        // Record the speed settings this run applies (they follow the current Settings, not
+        // what a restored picture used), so the saved settings describe this picture.
+        let request = backend.withSpeedSettings(request)
+        phase = .generating(step: 0, total: request.steps)
+        let start = Date()
+        let flag = cancelFlag
+        let timer = StepTimer()
+        let image: CGImage? = try await run {
+            try backend.generate(request, previewEvery: previewEvery) { step, total, preview in
+                let eta = timer.record(step: step, total: total)
+                Task { @MainActor [weak self] in
+                    guard let self, self.isBusy else { return }
+                    self.phase = .generating(step: step, total: total)
+                    self.etaSeconds = eta
+                    if let preview { self.preview = preview }
+                }
+                return !flag.isSet
+            }
+        }
+        guard let image else { throw BackendError.noImage }
+        return (image, request, Date().timeIntervalSince(start))
     }
 
     private func prepareBackend(for model: InstalledModel, request: GenerationRequest) async throws -> ImageBackend {
